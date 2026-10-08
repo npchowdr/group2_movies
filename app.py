@@ -72,9 +72,9 @@ risk_problem = ("No genres meet the minimum-films threshold for this year range.
                 if risk.empty else None)
 
 # ---------------------------------------------------------------- tabs
-(tab_curve, tab_ridge, tab_budget_stats,
+(tab_curve, tab_budget_stats,
  tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts) = st.tabs([
-    "📈 Budget curves", "🎻 Budget side-by-side", "📋 Budget stats",
+    "📈 Budget curves", "📋 Budget stats",
     "📊 Risk vs. reward", "⭐ Blockbuster vs. bust", "📋 ROI stats", "🚀 Low-budget breakouts"
 ])
 
@@ -92,7 +92,7 @@ with tab_curve:
         if show_medians:
             st.caption("Dashed vertical lines mark each genre's median budget.")
 
-with tab_ridge:
+# with tab_ridge:
     if budget_problem:
         st.warning(budget_problem)
     else:
