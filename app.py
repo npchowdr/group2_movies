@@ -105,3 +105,4 @@ with tab_stats:
             "Std deviation": st.column_config.NumberColumn(format="$%.1fM"),
         },
     )
+    

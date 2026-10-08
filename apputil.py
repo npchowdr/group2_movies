@@ -6,6 +6,7 @@ Pure data / plotting logic — no Streamlit calls — so it can be imported and 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 
 YEAR_MIN, YEAR_MAX = 2010, 2018  # years with a meaningful sample (~120-200 films each)
 GENRES = [
