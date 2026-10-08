@@ -327,3 +327,81 @@ def mean_std_table(df, genres=GENRES):
                      "Average budget": v.mean() / 1e6,
                      "Std deviation": v.std(ddof=1) / 1e6})
     return pd.DataFrame(rows).sort_values("Average budget", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- Q1: low-budget breakouts (TH)
+ALL_GENRES = "All genres"
+BUDGET_STEPS = [1e6, 2e6, 3e6, 5e6, 7e6, 9e6, 12e6, 15e6, 20e6, 30e6, 50e6, 100e6, 425e6]
+
+
+def breakout_tag(df: pd.DataFrame, max_budget: float, genre: str, multiple: float) -> pd.DataFrame:
+    """Films with reported box office, plus three columns: `multiple` (gross / budget),
+    `selected` (fits the budget cap + genre) and `breakout` (grossed >= multiple x budget)."""
+    out = df[~df["no_reported_box_office"]].copy()   # a $0 gross would count as a flop
+    out["multiple"] = out["worldwide_gross"] / out["production_budget"]   # = roi + 1
+    out["selected"] = out["production_budget"] <= max_budget
+    if genre != ALL_GENRES:
+        out["selected"] &= out[genre] == 1
+    out["breakout"] = out["multiple"] >= multiple
+    return out
+
+
+def breakout_summary(tagged: pd.DataFrame) -> dict:
+    """Headline numbers for the selected films (expects the output of breakout_tag)."""
+    sel, rest = tagged[tagged["selected"]], tagged[~tagged["selected"]]
+    return {
+        "films": len(sel),
+        "breakouts": int(sel["breakout"].sum()),
+        "rate": sel["breakout"].mean() if len(sel) else np.nan,
+        "rest_rate": rest["breakout"].mean() if len(rest) else np.nan,
+        "median_multiple": sel["multiple"].median() if len(sel) else np.nan,
+        "lost_money": (sel["multiple"] < 1).mean() if len(sel) else np.nan,
+    }
+
+
+def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_GENRES,
+                    multiple: float = 6) -> go.Figure:
+    """Budget vs. worldwide gross, with the chosen budget/genre slice highlighted."""
+    tagged = breakout_tag(df, max_budget, genre, multiple)
+    plot = tagged[tagged["worldwide_gross"] >= 1000]   # keep the log axis readable
+    blue, orange = PALETTE[0], PALETTE[1]
+    groups = [
+        ("All other films", plot[~plot["selected"]], REF_COLOR, 5, 0.25),
+        ("In your selection", plot[plot["selected"] & ~plot["breakout"]], blue, 7, 0.6),
+        (f"Breakouts ({multiple}x+ budget)", plot[plot["selected"] & plot["breakout"]], orange, 9, 0.9),
+    ]
+
+    fig = go.Figure()
+    for name, g, color, size, opacity in groups:
+        fig.add_trace(go.Scatter(
+            x=g["production_budget"], y=g["worldwide_gross"], mode="markers",
+            name=f"{name} (n={len(g)})",
+            marker=dict(color=color, size=size, opacity=opacity),
+            customdata=np.column_stack([g["movie"], g["year"], g["genres"], g["multiple"]]),
+            hovertemplate=("<b>%{customdata[0]}</b> (%{customdata[1]})<br>%{customdata[2]}<br>"
+                           "Budget %{x:$,.0f}<br>Gross %{y:$,.0f}<br>"
+                           "<b>%{customdata[3]:.1f}x</b> budget<extra></extra>"),
+        ))
+
+    # Reference lines: break-even, the breakout line, and the budget cap
+    x = np.array([2e4, 5e8])
+    lines = [(x, x, REF_COLOR, "dash"), (x, x * multiple, orange, "dash"),
+             ([max_budget, max_budget], [1e3, 4e9], REF_COLOR, "dot")]
+    for lx, ly, color, dash in lines:
+        fig.add_trace(go.Scatter(x=lx, y=ly, mode="lines", line=dict(color=color, width=1, dash=dash),
+                                 hoverinfo="skip", showlegend=False))
+    labels = [(5e8, 5e8 * 0.5, "break-even", "right"), (2e4, 2e4 * multiple * 2, f"{multiple}x budget", "left"),
+              (max_budget, 4e9, f" budget cap {fmt_money(max_budget)}", "left")]
+    for lx, ly, text, anchor in labels:
+        fig.add_annotation(x=np.log10(lx), y=np.log10(ly), text=text, showarrow=False,
+                           xanchor=anchor, font=dict(size=11, color=REF_COLOR))
+
+    axis = dict(type="log", tickvals=[1e4, 1e5, 1e6, 1e7, 1e8, 1e9],
+                ticktext=["$10K", "$100K", "$1M", "$10M", "$100M", "$1B"])
+    fig.update_layout(
+        xaxis=dict(title="Production budget (log scale)", range=[4.2, 8.8], **axis),
+        yaxis=dict(title="Worldwide gross (log scale)", range=[3, 9.7], **axis),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        height=560, margin=dict(l=10, r=10, t=40, b=10), hoverlabel=dict(align="left"),
+    )
+    return fig
