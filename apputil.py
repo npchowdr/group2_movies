@@ -3,25 +3,12 @@ Helper functions for the movie budget distribution app.
 Pure data / plotting logic — no Streamlit calls — so it can be imported and tested anywhere.
 """
 
-<<<<<<< HEAD
-# update/add code below ...
 
 
-"""
-Helper functions for the genre risk/reward app.
-Pure data / plotting logic -- no Streamlit calls -- so it can be imported and tested anywhere.
-Mirrors the conventions of the team's budget-distribution app (same YEAR_MIN/YEAR_MAX,
-GENRES list, PALETTE, and fmt_money helper) so the pages feel consistent side by side.
-"""
-
-import numpy as np
-import plotly.graph_objects as go
-=======
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
->>>>>>> b636cf76e1b603c7352b82ded1e4043404f382a6
 
 YEAR_MIN, YEAR_MAX = 2010, 2018  # years with a meaningful sample (~120-200 films each)
 GENRES = [
@@ -29,28 +16,19 @@ GENRES = [
     "Family", "Fantasy", "History", "Horror", "Music", "Mystery", "Romance",
     "Science Fiction", "Thriller", "War", "Western",
 ]  # "TV Movie" omitted: only 3 films in range
-<<<<<<< HEAD
 DEFAULT_GENRE = "Adventure"
-=======
 DEFAULT_GENRES = ["Action", "Animation", "Comedy", "Drama", "Horror"]
->>>>>>> b636cf76e1b603c7352b82ded1e4043404f382a6
 PALETTE = [
     "#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#B279A2",
     "#FF9DA6", "#9D755D", "#EECA3B", "#BAB0AC", "#1F77B4", "#D62728",
 ]
-<<<<<<< HEAD
-=======
+
 REF_COLOR = "#888888"
->>>>>>> b636cf76e1b603c7352b82ded1e4043404f382a6
 
 
 # ---------------------------------------------------------------- data
 def load_data(source) -> pd.DataFrame:
-<<<<<<< HEAD
     """Read the CSV and keep 2010-2018 films with a positive budget."""
-=======
-    """Read the CSV and keep 2010–2018 films with a positive budget."""
->>>>>>> b636cf76e1b603c7352b82ded1e4043404f382a6
     df = pd.read_csv(source)
     df = df[df["year"].between(YEAR_MIN, YEAR_MAX)].copy()
     df = df[df["production_budget"] > 0]
@@ -65,8 +43,6 @@ def filter_data(df: pd.DataFrame, years: tuple[int, int], exclude_no_bo: bool) -
     return out
 
 
-<<<<<<< HEAD
-=======
 def genre_budgets(df: pd.DataFrame, genres: list[str], min_films: int = 3) -> dict[str, np.ndarray]:
     """Map each genre to an array of its films' budgets (genres with too few films dropped)."""
     groups = {g: df.loc[df[g] == 1, "production_budget"].to_numpy(float) for g in genres}
@@ -78,7 +54,6 @@ def genre_color(genre: str, genres: list[str]) -> str:
 
 
 # ---------------------------------------------------------------- helpers
->>>>>>> b636cf76e1b603c7352b82ded1e4043404f382a6
 def fmt_money(v: float) -> str:
     if v >= 1e9:
         return f"${v/1e9:.2f}B"
@@ -87,12 +62,6 @@ def fmt_money(v: float) -> str:
     if v >= 1e3:
         return f"${v/1e3:.0f}K"
     return f"${v:,.0f}"
-
-
-<<<<<<< HEAD
-def genre_color(genre: str, genres: list[str]) -> str:
-    return PALETTE[genres.index(genre) % len(PALETTE)]
-
 
 # ---------------------------------------------------------------- Q3: risk/reward
 def get_genre_risk_reward(df: pd.DataFrame, genres: list[str] = GENRES, min_films: int = 10) -> pd.DataFrame:
@@ -208,7 +177,7 @@ def risk_reward_table(risk: pd.DataFrame) -> pd.DataFrame:
         "std_roi": "ROI Std Dev", "coefficient_of_variation": "Volatility (CV)",
     })
     return out
-=======
+
 def hex_to_rgba(color: str, alpha: float) -> str:
     r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
     return f"rgba({r},{g},{b},{alpha})"
@@ -358,4 +327,3 @@ def mean_std_table(df, genres=GENRES):
                      "Average budget": v.mean() / 1e6,
                      "Std deviation": v.std(ddof=1) / 1e6})
     return pd.DataFrame(rows).sort_values("Average budget", ascending=False).reset_index(drop=True)
->>>>>>> b636cf76e1b603c7352b82ded1e4043404f382a6
