@@ -92,13 +92,6 @@ with tab_curve:
         if show_medians:
             st.caption("Dashed vertical lines mark each genre's median budget.")
 
-# with tab_ridge:
-    if budget_problem:
-        st.warning(budget_problem)
-    else:
-        st.plotly_chart(violin_figure(data, groups, log_scale), width="stretch")
-        st.caption("Sorted by median budget. Hover over points to see individual films.")
-
 with tab_budget_stats:
     if budget_problem:
         st.warning(budget_problem)
