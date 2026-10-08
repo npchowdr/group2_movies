@@ -3,11 +3,7 @@ from pathlib import Path
 import numpy as np
 import streamlit as st
 
-from apputil import (
-    DEFAULT_GENRES, GENRES, MONEY_COLS, YEAR_MAX, YEAR_MIN,
-    distribution_figure, filter_data, fmt_money, genre_budgets, load_data, mean_std_table,
-    stats_for_display, summary_stats, violin_figure,
-)
+from apputil import *
 
 st.set_page_config(page_title="Budget Distribution by Genre", page_icon="🎬", layout="wide")
 
