@@ -4,6 +4,7 @@ import numpy as np
 import streamlit as st
 
 from apputil import *
+from vasundara_apputil import ROI_VARIABLES, roi_relationship_figure
 
 st.set_page_config(page_title="Movie Budgets & ROI by Genre", page_icon="🎬", layout="wide")
 
@@ -73,9 +74,15 @@ risk_problem = ("No genres meet the minimum-films threshold for this year range.
 
 # ---------------------------------------------------------------- tabs
 (tab_curve, tab_budget_stats,
- tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts) = st.tabs([
-    "📈 Budget curves", "📋 Budget stats",
-    "📊 Risk vs. reward", "⭐ Blockbuster vs. bust", "📋 ROI stats", "🚀 Low-budget breakouts"
+ tab_risk, tab_extremes, tab_risk_stats,
+ tab_low_budget_breakouts, tab_roi) = st.tabs([
+    "📈 Budget curves",
+    "📋 Budget stats",
+    "📊 Risk vs. reward",
+    "⭐ Blockbuster vs. bust",
+    "📋 ROI stats",
+    "🚀 Low-budget breakouts",
+    "📈 ROI Relationships"
 ])
 
 # ======================= Budget distribution =======================
@@ -227,3 +234,42 @@ with tab_low_budget_breakouts:
                     "worldwide_gross": st.column_config.NumberColumn("Worldwide gross", format="dollar"),
                     "multiple": st.column_config.NumberColumn("Gross / budget", format="%.1fx"),
                 })
+
+            # ------------------------------------------------------------
+# ROI Relationship Analysis - Vasundara
+# ------------------------------------------------------------
+
+with tab_roi:
+    st.subheader("How Movie Characteristics Relate to ROI")
+
+    st.write(
+        "Explore how different movie characteristics relate to ROI. "
+        "Movies are divided into four approximately equal groups: "
+        "Low, Medium, High, and Very High."
+    )
+
+    selected_name = st.selectbox(
+        "Choose a movie characteristic",
+        list(ROI_VARIABLES.keys()),
+        key="roi_relationship_variable"
+    )
+
+    selected_variable = ROI_VARIABLES[selected_name]
+
+    fig, correlation, summary = roi_relationship_figure(
+        df,
+        selected_variable,
+        selected_name
+    )
+
+    st.plotly_chart(fig, width="stretch")
+
+    st.metric(
+        "Pearson correlation (r)",
+        f"{correlation:.3f}"
+    )
+
+    st.caption(
+        "Hover over each point to see the median ROI, mean ROI, "
+        "and number of movies in that group."
+    )
