@@ -17,6 +17,7 @@ GENRES = [
     "Science Fiction", "Thriller", "War", "Western",
 ]  # "TV Movie" omitted: only 3 films in range
 DEFAULT_GENRE = "Adventure"
+BLOCKBUSTER_BUDGET = 100_000_000  # team definition: a blockbuster is a film with a $100M+ budget
 DEFAULT_GENRES = ["Action", "Animation", "Comedy", "Drama", "Horror"]
 PALETTE = [
     "#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#B279A2",
@@ -138,35 +139,72 @@ def extremes_figure(subset: pd.DataFrame, biggest: pd.Series, worst: pd.Series, 
     with the biggest-budget film and lowest-ROI film starred and labeled --
     a blockbuster-vs-bust callout within one genre.
     """
-    fig = px.scatter(
-        subset, x="production_budget", y="roi", log_x=True,
-        hover_name="movie",
-        hover_data={"year": True, "production_budget": ":$,.0f", "roi": ":.2f"},
-        opacity=0.55,
-        labels={"production_budget": "Production Budget ($, log scale)", "roi": "ROI"},
+    subset = subset.assign(
+        tier=np.where(subset["production_budget"] >= BLOCKBUSTER_BUDGET,
+                      "Blockbuster ($100M+ budget)", "Other films")
     )
-    fig.update_traces(marker=dict(color="#BAB0AC", size=8))
+    fig = px.scatter(
+        subset, x="production_budget", y="roi", log_x=True, color="tier",
+        color_discrete_map={"Blockbuster ($100M+ budget)": "#4C78A8", "Other films": "#BAB0AC"},
+        category_orders={"tier": ["Blockbuster ($100M+ budget)", "Other films"]},
+        hover_name="movie",
+        hover_data={"year": True, "production_budget": ":$,.0f", "roi": ":.2f", "tier": False},
+        opacity=0.6,
+        labels={"production_budget": "Production Budget ($, log scale)", "roi": "ROI",
+                "tier": ""},
+    )
+    fig.update_traces(marker=dict(size=8))
+    fig.add_vline(x=BLOCKBUSTER_BUDGET, line_dash="dot", line_color="#4C78A8",
+                  annotation_text="$100M blockbuster line", annotation_position="top left")
 
+    top_label = "Biggest blockbuster" if biggest["production_budget"] >= BLOCKBUSTER_BUDGET \
+        else "Biggest budget (not a blockbuster)"
     fig.add_trace(go.Scatter(
-        x=[biggest["production_budget"]], y=[biggest["roi"]], mode="markers+text",
+        x=[biggest["production_budget"]], y=[biggest["roi"]], mode="markers",
         marker=dict(symbol="star", size=22, color="#4C78A8", line=dict(width=1, color="black")),
-        text=[f"{biggest['movie']} ({int(biggest['year'])})<br>Biggest blockbuster"],
-        textposition="top center", name="Biggest blockbuster",
+        name=top_label,
         hovertemplate=(f"<b>{biggest['movie']}</b><br>Budget: ${biggest['production_budget']:,.0f}"
                        f"<br>ROI: {biggest['roi']:.2f}<extra></extra>"),
     ))
     fig.add_trace(go.Scatter(
-        x=[worst["production_budget"]], y=[worst["roi"]], mode="markers+text",
+        x=[worst["production_budget"]], y=[worst["roi"]], mode="markers",
         marker=dict(symbol="star", size=22, color="#E45756", line=dict(width=1, color="black")),
-        text=[f"{worst['movie']} ({int(worst['year'])})<br>Lowest ROI"],
-        textposition="bottom center", name="Lowest ROI",
+        name="Lowest ROI",
         hovertemplate=(f"<b>{worst['movie']}</b><br>Budget: ${worst['production_budget']:,.0f}"
                        f"<br>ROI: {worst['roi']:.2f}<extra></extra>"),
     ))
-    fig.add_hline(y=0, line_dash="dash", line_color="black",
+    for row, label, color, ax, ay in (
+        (biggest, top_label, "#4C78A8", -110, -60),
+        (worst, "Lowest ROI", "#E45756", 90, -50),
+    ):
+        fig.add_annotation(
+            x=np.log10(row["production_budget"]), y=row["roi"], ax=ax, ay=ay,
+            text=f"<b>{row['movie']}</b> ({int(row['year'])})<br>{label}",
+            showarrow=True, arrowhead=2, arrowcolor=color,
+            bgcolor="rgba(255,255,255,0.92)", bordercolor=color, borderwidth=1,
+            font=dict(size=11, color="#1f1f1f"),  # dark text: the box is white in light AND dark mode
+        )
+    fig.add_hline(y=0, line_dash="dash", line_color="gray",
                   annotation_text="break-even", annotation_position="bottom right")
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=10), showlegend=True)
     return fig
+
+
+def blockbuster_summary(subset: pd.DataFrame) -> dict:
+    """
+    Compare $100M+ blockbusters with all other films in `subset` (one genre's films):
+    counts, share that lost money (ROI < 0), and median ROI. Values are NaN when a
+    group is empty (e.g. Documentary has no $100M+ films).
+    """
+    is_bb = subset["production_budget"] >= BLOCKBUSTER_BUDGET
+    out = {}
+    for key, grp in (("bb", subset[is_bb]), ("other", subset[~is_bb])):
+        out[key] = {
+            "n": len(grp),
+            "pct_lose": (grp["roi"] < 0).mean() * 100 if len(grp) else float("nan"),
+            "median_roi": grp["roi"].median() if len(grp) else float("nan"),
+        }
+    return out
 
 
 # ---------------------------------------------------------------- stats tab
@@ -327,6 +365,81 @@ def mean_std_table(df, genres=GENRES):
                      "Average budget": v.mean() / 1e6,
                      "Std deviation": v.std(ddof=1) / 1e6})
     return pd.DataFrame(rows).sort_values("Average budget", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------- genre growth (RS Q2)
+# Metric label -> (column, aggregation, is_money). Covers the three growth angles in the
+# question: how many films, how much money goes into them, and how popular they are.
+GROWTH_METRICS = {
+    "Number of films": ("production_budget", "count", False),
+    "Total budget (budget allocation)": ("production_budget", "sum", True),
+    "Average budget": ("production_budget", "mean", True),
+    "Average popularity (TMDB)": ("popularity", "mean", False),
+}
+DEFAULT_GROWTH_GENRES = ["History", "Science Fiction", "Documentary", "Romance"]
+MIN_FILMS_FOR_GROWTH_CALLOUT = 5  # ignore 1 -> 2 film "doublings" when naming risers/fallers
+
+
+def genre_year_table(df: pd.DataFrame, genres: list[str], metric: str) -> pd.DataFrame:
+    """
+    Long table of one row per (genre, year): the chosen metric plus the number of films.
+    Years with no films in a genre get 0 for counts/totals and NaN for averages, so a gap is
+    shown as a gap instead of as a fake zero.
+    """
+    col, agg, _ = GROWTH_METRICS[metric]
+    years = list(range(int(df["year"].min()), int(df["year"].max()) + 1))
+    rows = []
+    for g in genres:
+        sub = df[df[g] == 1]
+        by_year = sub.groupby("year")[col].agg(agg)
+        n = sub.groupby("year").size()
+        for y in years:
+            value = by_year.get(y, 0 if agg in ("count", "sum") else np.nan)
+            rows.append({"genre": g, "year": y, "value": value, "films": int(n.get(y, 0))})
+    return pd.DataFrame(rows)
+
+
+def growth_figure(table: pd.DataFrame, genres: list[str], metric: str) -> go.Figure:
+    """One line per genre across years for the chosen growth metric."""
+    is_money = GROWTH_METRICS[metric][2]
+    fig = px.line(
+        table, x="year", y="value", color="genre", markers=True,
+        color_discrete_map={g: genre_color(g, genres) for g in genres},
+        hover_data={"films": True, "value": False, "genre": False, "year": False},
+        labels={"value": metric, "year": "Release year", "films": "Films", "genre": "Genre"},
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{fullData.name}</b><br>%{x}: "
+                      + ("%{y:$,.3s}" if is_money else "%{y:,.1f}")
+                      + "<br>%{customdata[0]} films<extra></extra>"
+    )
+    fig.update_xaxes(dtick=1)
+    if is_money:
+        fig.update_yaxes(tickprefix="$", tickformat="~s")
+    fig.update_layout(height=480, margin=dict(l=10, r=10, t=20, b=10),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                      hovermode="closest")
+    return fig
+
+
+def growth_summary(df: pd.DataFrame, genres: list[str] = GENRES) -> pd.DataFrame:
+    """
+    Per-genre film counts in the first and last year of `df`, with the change and % change
+    (NaN if the genre had no films in the first year). Sorted by % change, biggest riser first.
+    """
+    y0, y1 = int(df["year"].min()), int(df["year"].max())
+    rows = []
+    for g in genres:
+        sub = df[df[g] == 1]
+        a, b = int((sub["year"] == y0).sum()), int((sub["year"] == y1).sum())
+        rows.append({
+            "Genre": g, f"Films in {y0}": a, f"Films in {y1}": b, "Change": b - a,
+            "% change": (b - a) / a * 100 if a else np.nan,
+            "_big_enough": max(a, b) >= MIN_FILMS_FOR_GROWTH_CALLOUT,
+        })
+    return pd.DataFrame(rows).sort_values("% change", ascending=False, na_position="last") \
+        .reset_index(drop=True)
+
 
 
 # ---------------------------------------------------------------- Q1: low-budget breakouts (TH)
