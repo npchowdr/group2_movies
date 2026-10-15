@@ -405,3 +405,71 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
         height=560, margin=dict(l=10, r=10, t=40, b=10), hoverlabel=dict(align="left"),
     )
     return fig
+
+
+# ---------------------------------------------------------------- Q2: release-month seasonality (TH)
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+SEASON_MIN_FILMS = 5   # months with fewer films than this are grayed out as unreliable
+SEASON_MEASURES = {
+    "Typical return": "median_multiple",   # median worldwide gross / budget
+    "Hit rate": "hit_rate",                # share of films that grossed more than their budget
+}
+
+
+def season_films(df: pd.DataFrame, genre: str) -> pd.DataFrame:
+    """Films with reported box office in the chosen genre, plus `multiple` (gross / budget)."""
+    out = df[~df["no_reported_box_office"]].copy()   # a $0 gross would count as a flop
+    if genre != ALL_GENRES:
+        out = out[out[genre] == 1]
+    out["multiple"] = out["worldwide_gross"] / out["production_budget"]
+    return out
+
+
+def season_table(films: pd.DataFrame) -> pd.DataFrame:
+    """One row per release month: films released, typical return, hit rate, and the top film."""
+    rows = []
+    for m, name in enumerate(MONTHS, start=1):
+        sub = films[films["month"] == m]
+        top = sub.loc[sub["multiple"].idxmax()] if len(sub) else None
+        rows.append({
+            "month": name, "films": len(sub),
+            "median_multiple": sub["multiple"].median() if len(sub) else np.nan,
+            "hit_rate": (sub["multiple"] >= 1).mean() if len(sub) else np.nan,
+            "top_film": f"{top['movie']} ({top['multiple']:.1f}x)" if top is not None else "",
+        })
+    table = pd.DataFrame(rows)
+    table["reliable"] = table["films"] >= SEASON_MIN_FILMS
+    return table
+
+
+def season_figure(table: pd.DataFrame, measure: str, baseline: float, genre: str) -> go.Figure:
+    """Bars per release month for the chosen measure, compared with the genre's year-round value."""
+    col = SEASON_MEASURES[measure]
+    is_rate = col == "hit_rate"
+    blue, orange = PALETTE[0], PALETTE[1]
+    colors = [REF_COLOR if not ok else orange if v > baseline else blue
+              for v, ok in zip(table[col], table["reliable"])]
+    values = [f"{v:.0%}" if is_rate else f"{v:.1f}x" for v in table[col].fillna(0)]
+    notes = ["" if ok else "<br><i>Too few films to trust</i>" for ok in table["reliable"]]
+
+    fig = go.Figure(go.Bar(
+        x=table["month"], y=table[col], marker_color=colors, marker_line_width=0,
+        customdata=np.column_stack([values, table["films"], table["top_film"], notes]),
+        hovertemplate=(f"<b>%{{x}}</b><br>{measure}: <b>%{{customdata[0]}}</b><br>"
+                       "%{customdata[1]} films released<br>Top film: %{customdata[2]}"
+                       "%{customdata[3]}<extra></extra>"),
+    ))
+    label = "all films" if genre == ALL_GENRES else genre
+    base_text = f"{baseline:.0%}" if is_rate else f"{baseline:.1f}x"
+    fig.add_hline(y=baseline, line=dict(color=REF_COLOR, width=1.5, dash="dash"))
+    fig.add_annotation(text=f"Dashed line = {label}, all year: {base_text}", showarrow=False,
+                       xref="paper", yref="paper", x=0, y=1.06, xanchor="left",
+                       font=dict(size=12, color=REF_COLOR))
+    fig.update_layout(
+        height=480, margin=dict(l=10, r=10, t=40, b=10), bargap=0.25, showlegend=False,
+        yaxis=dict(title="Share that made money" if is_rate else "Median gross / budget",
+                   tickformat=".0%" if is_rate else None, ticksuffix="" if is_rate else "x",
+                   rangemode="tozero"),
+        hoverlabel=dict(align="left"),
+    )
+    return fig

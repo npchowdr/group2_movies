@@ -73,9 +73,9 @@ risk_problem = ("No genres meet the minimum-films threshold for this year range.
 
 # ---------------------------------------------------------------- tabs
 (tab_curve, tab_budget_stats,
- tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts) = st.tabs([
+ tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts, tab_release_month) = st.tabs([
     "📈 Budget curves", "📋 Budget stats",
-    "📊 Risk vs. reward", "⭐ Blockbuster vs. bust", "📋 ROI stats", "🚀 Low-budget breakouts"
+    "📊 Risk vs. reward", "⭐ Blockbuster vs. bust", "📋 ROI stats", "🚀 Low-budget breakouts", "📅 Best release month"
 ])
 
 # ======================= Budget distribution =======================
@@ -227,3 +227,47 @@ with tab_low_budget_breakouts:
                     "worldwide_gross": st.column_config.NumberColumn("Worldwide gross", format="dollar"),
                     "multiple": st.column_config.NumberColumn("Gross / budget", format="%.1fx"),
                 })
+
+# ===================== Release-month seasonality (TH) =====================
+with tab_release_month:
+    st.subheader("When should you release it?")
+    st.caption("When in the year do movies do best, and does each genre have its own best season? "
+               "Pick a genre to see how its films performed by release month.")
+
+    r1, r2 = st.columns(2)
+    season_genre = r1.selectbox("Genre", [ALL_GENRES] + GENRES, key="season_genre",
+                                help="A film counts toward every genre it is tagged with.")
+    measure = r2.radio("Measure", list(SEASON_MEASURES), horizontal=True,
+                       help="Typical return = median worldwide gross / budget. "
+                            "Hit rate = share of films that grossed more than their budget.")
+
+    films = season_films(data, season_genre)
+    if films.empty:
+        st.warning(f"No {season_genre} films with reported box office in {years[0]}–{years[1]}.")
+    else:
+        months = season_table(films)
+        col = SEASON_MEASURES[measure]
+        baseline = films["multiple"].median() if col == "median_multiple" else (films["multiple"] >= 1).mean()
+        if col == "hit_rate":
+            fmt, vs_year = (lambda v: f"{v:.0%}"), (lambda v: f"{(v - baseline) * 100:+.0f} pts vs. all year")
+        else:
+            fmt, vs_year = (lambda v: f"{v:.1f}x"), (lambda v: f"{v - baseline:+.1f}x vs. all year")
+        trusted = months[months["reliable"]]
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Films", f"{len(films):,}")
+        if len(trusted) < 2:
+            st.caption(f"Fewer than two months have {SEASON_MIN_FILMS}+ films, "
+                       "so there is no reliable best or worst month.")
+        else:
+            best, worst = trusted.loc[trusted[col].idxmax()], trusted.loc[trusted[col].idxmin()]
+            m2.metric("Best month", f"{best['month']} · {fmt(best[col])}", vs_year(best[col]))
+            m3.metric("Worst month", f"{worst['month']} · {fmt(worst[col])}", vs_year(worst[col]))
+        busiest = months.loc[months["films"].idxmax()]
+        m4.metric("Busiest month", busiest["month"], f"{busiest['films']} films released", delta_color="off",
+                  help="Most crowded release month. Compare it with the best month: they are often not the same.")
+
+        st.plotly_chart(season_figure(months, measure, baseline, season_genre), width="stretch")
+        st.caption(f"Orange = better than this genre's year-round value, blue = worse. Gray months have fewer "
+                   f"than {SEASON_MIN_FILMS} films and aren't used for best/worst. Films with no reported "
+                   "gross are left out. Hover a bar for the top film that month.")
