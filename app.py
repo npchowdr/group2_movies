@@ -73,9 +73,9 @@ risk_problem = ("No genres meet the minimum-films threshold for this year range.
 
 # ---------------------------------------------------------------- tabs
 (tab_curve, tab_budget_stats,
- tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts, tab_release_month) = st.tabs([
+ tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts, tab_release_month, tab_genre_count) = st.tabs([
     "📈 Budget curves", "📋 Budget stats",
-    "📊 Risk vs. reward", "⭐ Blockbuster vs. bust", "📋 ROI stats", "🚀 Low-budget breakouts", "📅 Best release month"
+    "📊 Risk vs. reward", "⭐ Blockbuster vs. bust", "📋 ROI stats", "🚀 Low-budget breakouts", "📅 Best release month", "🧩 Number of genres"
 ])
 
 # ======================= Budget distribution =======================
@@ -271,3 +271,46 @@ with tab_release_month:
         st.caption(f"Orange = better than this genre's year-round value, blue = worse. Gray months have fewer "
                    f"than {SEASON_MIN_FILMS} films and aren't used for best/worst. Films with no reported "
                    "gross are left out. Hover a bar for the top film that month.")
+
+# ===================== Number of genres (TH) =====================
+with tab_genre_count:
+    st.subheader("Does mixing genres pay off?")
+    st.caption("For films tagged with several genres, does the number of genres matter, or only the "
+               "primary (first-listed) genre? Switch the measure to compare budget, gross, and return.")
+
+    all_count_films = genre_count_films(data, ALL_GENRES)
+    primary_counts = all_count_films["primary_genre"].value_counts()
+    primaries = [g for g in GENRES if primary_counts.get(g, 0) >= 30]   # enough films to split 5 ways
+
+    g1, g2 = st.columns(2)
+    primary = g1.selectbox("Primary genre", [ALL_GENRES] + primaries, key="count_primary",
+                           help="The first genre a film is listed under. Only genres with 30+ films are shown.")
+    count_measure = g2.radio("Measure", list(GENRE_COUNT_MEASURES), horizontal=True, key="count_measure")
+
+    count_films = genre_count_films(data, primary)
+    if count_films.empty:
+        st.warning(f"No films with primary genre {primary} in {years[0]}–{years[1]}.")
+    else:
+        few = count_films[count_films["genre_count"].isin(["1", "2"])]
+        many = count_films[count_films["genre_count"].isin(["4", "5+"])]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Films", f"{len(count_films):,}")
+        if len(few) < GENRE_COUNT_MIN_FILMS or len(many) < GENRE_COUNT_MIN_FILMS:
+            st.caption(f"Not enough films with both 1–2 and 4+ genres to compare them reliably.")
+        else:
+            few_budget, many_budget = few["production_budget"].median(), many["production_budget"].median()
+            few_gross, many_gross = few["worldwide_gross"].median(), many["worldwide_gross"].median()
+            few_return, many_return = few["multiple"].median(), many["multiple"].median()
+            c2.metric("Budget, 4+ genres", fmt_money(many_budget),
+                      f"{many_budget / few_budget:.1f}x vs. 1–2 genres", delta_color="off")
+            c3.metric("Gross, 4+ genres", fmt_money(many_gross),
+                      f"{many_gross / few_gross:.1f}x vs. 1–2 genres", delta_color="off")
+            c4.metric("Return, 4+ genres", f"{many_return:.1f}x",
+                      f"{many_return - few_return:+.1f}x vs. 1–2 genres",
+                      help="Typical return = median worldwide gross / budget. Budget and gross deltas are ratios: 4.0x = four times as much.")
+
+        st.plotly_chart(genre_count_figure(genre_count_table(count_films), count_measure, primary),
+                        width="stretch")
+        st.caption(f"Gray bars have fewer than {GENRE_COUNT_MIN_FILMS} films. Films with no reported gross "
+                   "are left out. Hover a bar to see budget, gross, and return together.")

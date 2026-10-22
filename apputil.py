@@ -473,3 +473,67 @@ def season_figure(table: pd.DataFrame, measure: str, baseline: float, genre: str
         hoverlabel=dict(align="left"),
     )
     return fig
+
+
+# ---------------------------------------------------------------- Q3: number of genres (TH)
+GENRE_COUNT_ORDER = ["1", "2", "3", "4", "5+"]
+GENRE_COUNT_MIN_FILMS = 5   # bars with fewer films than this are grayed out as unreliable
+GENRE_COUNT_MEASURES = {
+    "Typical return": "median_multiple",        # median worldwide gross / budget
+    "Median budget": "median_budget",
+    "Median worldwide gross": "median_gross",
+}
+
+
+def genre_count_films(df: pd.DataFrame, primary: str) -> pd.DataFrame:
+    """Films with reported box office, plus `primary_genre` (first-listed genre),
+    `genre_count` ("1" to "5+") and `multiple` (gross / budget). Optionally one primary genre only."""
+    out = df[~df["no_reported_box_office"]].copy()   # a $0 gross would count as a flop
+    genre_lists = out["genres"].str.split(",")
+    out["primary_genre"] = genre_lists.str[0].str.strip()
+    out["genre_count"] = genre_lists.str.len().clip(upper=5).map(lambda n: "5+" if n == 5 else str(n))
+    out["multiple"] = out["worldwide_gross"] / out["production_budget"]
+    if primary != ALL_GENRES:
+        out = out[out["primary_genre"] == primary]
+    return out
+
+
+def genre_count_table(films: pd.DataFrame) -> pd.DataFrame:
+    """One row per genre count: films, median budget, median gross, typical return."""
+    table = (films.groupby("genre_count")
+             .agg(films=("movie", "count"), median_budget=("production_budget", "median"),
+                  median_gross=("worldwide_gross", "median"), median_multiple=("multiple", "median"))
+             .reindex(GENRE_COUNT_ORDER).reset_index())
+    table["films"] = table["films"].fillna(0).astype(int)
+    table["reliable"] = table["films"] >= GENRE_COUNT_MIN_FILMS
+    return table
+
+
+def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Figure:
+    """Bars by number of genres for the chosen measure (gray = too few films to trust)."""
+    col = GENRE_COUNT_MEASURES[measure]
+    is_money = col != "median_multiple"
+    colors = [PALETTE[0] if ok else REF_COLOR for ok in table["reliable"]]
+    notes = ["" if ok else "<br><i>Too few films to trust</i>" for ok in table["reliable"]]
+    budgets = [fmt_money(v) if pd.notna(v) else "–" for v in table["median_budget"]]
+    grosses = [fmt_money(v) if pd.notna(v) else "–" for v in table["median_gross"]]
+    returns = [f"{v:.1f}x" if pd.notna(v) else "–" for v in table["median_multiple"]]
+
+    fig = go.Figure(go.Bar(
+        x=table["genre_count"], y=table[col], marker_color=colors, marker_line_width=0,
+        customdata=np.column_stack([table["films"], budgets, grosses, returns, notes]),
+        hovertemplate=("<b>%{x} genre(s)</b><br>%{customdata[0]} films<br>"
+                       "Median budget: %{customdata[1]}<br>Median gross: %{customdata[2]}<br>"
+                       "Typical return: %{customdata[3]}%{customdata[4]}<extra></extra>"),
+    ))
+    label = "all films" if primary == ALL_GENRES else f"primary genre: {primary}"
+    fig.update_layout(
+        height=460, margin=dict(l=10, r=10, t=40, b=10), bargap=0.3, showlegend=False,
+        title=dict(text=f"{measure} by number of genres ({label})", font=dict(size=14)),
+        xaxis=dict(title="Number of genres the film is tagged with", type="category"),
+        yaxis=dict(title=measure, rangemode="tozero",
+                   tickprefix="$" if is_money else "", tickformat="~s" if is_money else None,
+                   ticksuffix="" if is_money else "x"),
+        hoverlabel=dict(align="left"),
+    )
+    return fig
