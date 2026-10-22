@@ -4,7 +4,14 @@ import numpy as np
 import streamlit as st
 
 from apputil import *
-from vasundara_apputil import ROI_VARIABLES, roi_relationship_figure
+from vasundara_apputil import (
+    ROI_VARIABLES,
+    roi_relationship_figure,
+    roi_key_insight,
+    create_range_table,
+    roi_comparison_metrics,
+    strongest_roi_relationship,
+)
 
 st.set_page_config(page_title="Movie Budgets & ROI by Genre", page_icon="🎬", layout="wide")
 
@@ -235,12 +242,15 @@ with tab_low_budget_breakouts:
                     "multiple": st.column_config.NumberColumn("Gross / budget", format="%.1fx"),
                 })
 
-            # ------------------------------------------------------------
+           # ------------------------------------------------------------
 # ROI Relationship Analysis - Vasundara
 # ------------------------------------------------------------
 
 with tab_roi:
-    st.subheader("How Movie Characteristics Relate to ROI")
+
+    st.subheader(
+        "How Movie Characteristics Relate to ROI"
+    )
 
     st.write(
         "Explore how different movie characteristics relate to ROI. "
@@ -248,28 +258,154 @@ with tab_roi:
         "Low, Medium, High, and Very High."
     )
 
+    # --------------------------------------------------------
+    # Choose movie characteristic
+    # --------------------------------------------------------
+
     selected_name = st.selectbox(
         "Choose a movie characteristic",
         list(ROI_VARIABLES.keys()),
-        key="roi_relationship_variable"
+        key="roi_relationship_variable",
     )
 
-    selected_variable = ROI_VARIABLES[selected_name]
-
-    fig, correlation, summary = roi_relationship_figure(
-        df,
-        selected_variable,
+    selected_variable = ROI_VARIABLES[
         selected_name
+    ]
+
+    # --------------------------------------------------------
+    # NEW 1: Mean vs Median toggle
+    # --------------------------------------------------------
+
+    roi_statistic = st.radio(
+        "Choose ROI summary statistic",
+        ["Median ROI", "Mean ROI"],
+        horizontal=True,
+        key="roi_statistic_choice",
     )
 
-    st.plotly_chart(fig, width="stretch")
+    # --------------------------------------------------------
+    # Create visualization
+    # --------------------------------------------------------
 
-    st.metric(
-        "Pearson correlation (r)",
-        f"{correlation:.3f}"
+    fig, correlation, summary, movie_count = (
+        roi_relationship_figure(
+            df,
+            selected_variable,
+            selected_name,
+            roi_statistic,
+        )
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch",
+    )
+
+    # --------------------------------------------------------
+    # Main metrics
+    # --------------------------------------------------------
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric(
+            "Pearson correlation (r)",
+            f"{correlation:.3f}",
+        )
+
+    with col2:
+        st.metric(
+            "Movies analyzed",
+            f"{movie_count:,}",
+        )
+
+    # --------------------------------------------------------
+    # NEW 2, 3, 4: Quick analysis
+    # --------------------------------------------------------
+
+    comparison = roi_comparison_metrics(
+        summary,
+        roi_statistic,
+    )
+
+    strongest_name, strongest_r = (
+        strongest_roi_relationship(df)
+    )
+
+    st.subheader("Quick Analysis")
+
+    col3, col4, col5 = st.columns(3)
+
+    # Strongest relationship
+    with col3:
+        st.metric(
+            "Strongest ROI Relationship",
+            strongest_name,
+            f"r = {strongest_r:.3f}",
+        )
+
+    # Highest ROI group
+    with col4:
+        st.metric(
+            f"Highest {roi_statistic} Group",
+            comparison["highest_group"],
+            f"{comparison['highest_roi']:.2f} ROI",
+        )
+
+    # Low to Very High change
+    with col5:
+        st.metric(
+            "Low → Very High ROI Change",
+            f"{comparison['roi_change']:+.2f}",
+        )
+
+    # --------------------------------------------------------
+    # Key Insight
+    # --------------------------------------------------------
+
+    st.subheader("Key Insight")
+
+    insight = roi_key_insight(
+        summary,
+        correlation,
+        selected_name,
+        roi_statistic,
+    )
+
+    st.info(insight)
+
+    # --------------------------------------------------------
+    # Quartile ranges
+    # --------------------------------------------------------
+
+    st.subheader(
+        f"{selected_name} Group Ranges"
+    )
+
+    st.write(
+        "The ranges below show what Low, Medium, High, "
+        "and Very High represent for the selected characteristic."
+    )
+
+    range_table = create_range_table(
+        summary,
+        selected_name,
+    )
+
+    st.dataframe(
+        range_table,
+        width="stretch",
+        hide_index=True,
     )
 
     st.caption(
-        "Hover over each point to see the median ROI, mean ROI, "
-        "and number of movies in that group."
+        "Each level contains approximately 25% of the movies. "
+        "Hover over the graph to see the value range, median ROI, "
+        "mean ROI, and number of movies in each group."
+    )
+
+    st.caption(
+        "The Pearson correlation and strongest relationship "
+        "are calculated using the movies remaining after the "
+        "current Streamlit filters."
     )
