@@ -4,15 +4,6 @@ import numpy as np
 import streamlit as st
 
 from apputil import *
-from vasundara_apputil import (
-    ROI_VARIABLES,
-    roi_relationship_figure,
-    roi_key_insight,
-    create_range_table,
-    roi_comparison_metrics,
-    strongest_roi_relationship,
-)
-
 st.set_page_config(page_title="Movie Budgets & ROI by Genre", page_icon="🎬", layout="wide")
 
 cached_load = st.cache_data(load_data)
