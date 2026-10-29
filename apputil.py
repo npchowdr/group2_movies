@@ -4,11 +4,13 @@ Pure data / plotting logic — no Streamlit calls — so it can be imported and 
 """
 
 
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 YEAR_MIN, YEAR_MAX = 2010, 2018  # years with a meaningful sample (~120-200 films each)
 GENRES = [
@@ -17,7 +19,6 @@ GENRES = [
     "Science Fiction", "Thriller", "War", "Western",
 ]  # "TV Movie" omitted: only 3 films in range
 DEFAULT_GENRE = "Adventure"
-BLOCKBUSTER_BUDGET = 100_000_000  # team definition: a blockbuster is a film with a $100M+ budget
 DEFAULT_GENRES = ["Action", "Animation", "Comedy", "Drama", "Horror"]
 PALETTE = [
     "#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#B279A2",
@@ -139,72 +140,35 @@ def extremes_figure(subset: pd.DataFrame, biggest: pd.Series, worst: pd.Series, 
     with the biggest-budget film and lowest-ROI film starred and labeled --
     a blockbuster-vs-bust callout within one genre.
     """
-    subset = subset.assign(
-        tier=np.where(subset["production_budget"] >= BLOCKBUSTER_BUDGET,
-                      "Blockbuster ($100M+ budget)", "Other films")
-    )
     fig = px.scatter(
-        subset, x="production_budget", y="roi", log_x=True, color="tier",
-        color_discrete_map={"Blockbuster ($100M+ budget)": "#4C78A8", "Other films": "#BAB0AC"},
-        category_orders={"tier": ["Blockbuster ($100M+ budget)", "Other films"]},
+        subset, x="production_budget", y="roi", log_x=True,
         hover_name="movie",
-        hover_data={"year": True, "production_budget": ":$,.0f", "roi": ":.2f", "tier": False},
-        opacity=0.6,
-        labels={"production_budget": "Production Budget ($, log scale)", "roi": "ROI",
-                "tier": ""},
+        hover_data={"year": True, "production_budget": ":$,.0f", "roi": ":.2f"},
+        opacity=0.55,
+        labels={"production_budget": "Production Budget ($, log scale)", "roi": "ROI"},
     )
-    fig.update_traces(marker=dict(size=8))
-    fig.add_vline(x=BLOCKBUSTER_BUDGET, line_dash="dot", line_color="#4C78A8",
-                  annotation_text="$100M blockbuster line", annotation_position="top left")
+    fig.update_traces(marker=dict(color="#BAB0AC", size=8))
 
-    top_label = "Biggest blockbuster" if biggest["production_budget"] >= BLOCKBUSTER_BUDGET \
-        else "Biggest budget (not a blockbuster)"
     fig.add_trace(go.Scatter(
-        x=[biggest["production_budget"]], y=[biggest["roi"]], mode="markers",
+        x=[biggest["production_budget"]], y=[biggest["roi"]], mode="markers+text",
         marker=dict(symbol="star", size=22, color="#4C78A8", line=dict(width=1, color="black")),
-        name=top_label,
+        text=[f"{biggest['movie']} ({int(biggest['year'])})<br>Biggest blockbuster"],
+        textposition="top center", name="Biggest blockbuster",
         hovertemplate=(f"<b>{biggest['movie']}</b><br>Budget: ${biggest['production_budget']:,.0f}"
                        f"<br>ROI: {biggest['roi']:.2f}<extra></extra>"),
     ))
     fig.add_trace(go.Scatter(
-        x=[worst["production_budget"]], y=[worst["roi"]], mode="markers",
+        x=[worst["production_budget"]], y=[worst["roi"]], mode="markers+text",
         marker=dict(symbol="star", size=22, color="#E45756", line=dict(width=1, color="black")),
-        name="Lowest ROI",
+        text=[f"{worst['movie']} ({int(worst['year'])})<br>Lowest ROI"],
+        textposition="bottom center", name="Lowest ROI",
         hovertemplate=(f"<b>{worst['movie']}</b><br>Budget: ${worst['production_budget']:,.0f}"
                        f"<br>ROI: {worst['roi']:.2f}<extra></extra>"),
     ))
-    for row, label, color, ax, ay in (
-        (biggest, top_label, "#4C78A8", -110, -60),
-        (worst, "Lowest ROI", "#E45756", 90, -50),
-    ):
-        fig.add_annotation(
-            x=np.log10(row["production_budget"]), y=row["roi"], ax=ax, ay=ay,
-            text=f"<b>{row['movie']}</b> ({int(row['year'])})<br>{label}",
-            showarrow=True, arrowhead=2, arrowcolor=color,
-            bgcolor="rgba(255,255,255,0.92)", bordercolor=color, borderwidth=1,
-            font=dict(size=11, color="#1f1f1f"),  # dark text: the box is white in light AND dark mode
-        )
-    fig.add_hline(y=0, line_dash="dash", line_color="gray",
+    fig.add_hline(y=0, line_dash="dash", line_color="black",
                   annotation_text="break-even", annotation_position="bottom right")
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=10), showlegend=True)
     return fig
-
-
-def blockbuster_summary(subset: pd.DataFrame) -> dict:
-    """
-    Compare $100M+ blockbusters with all other films in `subset` (one genre's films):
-    counts, share that lost money (ROI < 0), and median ROI. Values are NaN when a
-    group is empty (e.g. Documentary has no $100M+ films).
-    """
-    is_bb = subset["production_budget"] >= BLOCKBUSTER_BUDGET
-    out = {}
-    for key, grp in (("bb", subset[is_bb]), ("other", subset[~is_bb])):
-        out[key] = {
-            "n": len(grp),
-            "pct_lose": (grp["roi"] < 0).mean() * 100 if len(grp) else float("nan"),
-            "median_roi": grp["roi"].median() if len(grp) else float("nan"),
-        }
-    return out
 
 
 # ---------------------------------------------------------------- stats tab
@@ -367,81 +331,6 @@ def mean_std_table(df, genres=GENRES):
     return pd.DataFrame(rows).sort_values("Average budget", ascending=False).reset_index(drop=True)
 
 
-# ---------------------------------------------------------------- genre growth (RS Q2)
-# Metric label -> (column, aggregation, is_money). Covers the three growth angles in the
-# question: how many films, how much money goes into them, and how popular they are.
-GROWTH_METRICS = {
-    "Number of films": ("production_budget", "count", False),
-    "Total budget (budget allocation)": ("production_budget", "sum", True),
-    "Average budget": ("production_budget", "mean", True),
-    "Average popularity (TMDB)": ("popularity", "mean", False),
-}
-DEFAULT_GROWTH_GENRES = ["History", "Science Fiction", "Documentary", "Romance"]
-MIN_FILMS_FOR_GROWTH_CALLOUT = 5  # ignore 1 -> 2 film "doublings" when naming risers/fallers
-
-
-def genre_year_table(df: pd.DataFrame, genres: list[str], metric: str) -> pd.DataFrame:
-    """
-    Long table of one row per (genre, year): the chosen metric plus the number of films.
-    Years with no films in a genre get 0 for counts/totals and NaN for averages, so a gap is
-    shown as a gap instead of as a fake zero.
-    """
-    col, agg, _ = GROWTH_METRICS[metric]
-    years = list(range(int(df["year"].min()), int(df["year"].max()) + 1))
-    rows = []
-    for g in genres:
-        sub = df[df[g] == 1]
-        by_year = sub.groupby("year")[col].agg(agg)
-        n = sub.groupby("year").size()
-        for y in years:
-            value = by_year.get(y, 0 if agg in ("count", "sum") else np.nan)
-            rows.append({"genre": g, "year": y, "value": value, "films": int(n.get(y, 0))})
-    return pd.DataFrame(rows)
-
-
-def growth_figure(table: pd.DataFrame, genres: list[str], metric: str) -> go.Figure:
-    """One line per genre across years for the chosen growth metric."""
-    is_money = GROWTH_METRICS[metric][2]
-    fig = px.line(
-        table, x="year", y="value", color="genre", markers=True,
-        color_discrete_map={g: genre_color(g, genres) for g in genres},
-        hover_data={"films": True, "value": False, "genre": False, "year": False},
-        labels={"value": metric, "year": "Release year", "films": "Films", "genre": "Genre"},
-    )
-    fig.update_traces(
-        hovertemplate="<b>%{fullData.name}</b><br>%{x}: "
-                      + ("%{y:$,.3s}" if is_money else "%{y:,.1f}")
-                      + "<br>%{customdata[0]} films<extra></extra>"
-    )
-    fig.update_xaxes(dtick=1)
-    if is_money:
-        fig.update_yaxes(tickprefix="$", tickformat="~s")
-    fig.update_layout(height=480, margin=dict(l=10, r=10, t=20, b=10),
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-                      hovermode="closest")
-    return fig
-
-
-def growth_summary(df: pd.DataFrame, genres: list[str] = GENRES) -> pd.DataFrame:
-    """
-    Per-genre film counts in the first and last year of `df`, with the change and % change
-    (NaN if the genre had no films in the first year). Sorted by % change, biggest riser first.
-    """
-    y0, y1 = int(df["year"].min()), int(df["year"].max())
-    rows = []
-    for g in genres:
-        sub = df[df[g] == 1]
-        a, b = int((sub["year"] == y0).sum()), int((sub["year"] == y1).sum())
-        rows.append({
-            "Genre": g, f"Films in {y0}": a, f"Films in {y1}": b, "Change": b - a,
-            "% change": (b - a) / a * 100 if a else np.nan,
-            "_big_enough": max(a, b) >= MIN_FILMS_FOR_GROWTH_CALLOUT,
-        })
-    return pd.DataFrame(rows).sort_values("% change", ascending=False, na_position="last") \
-        .reset_index(drop=True)
-
-
-
 # ---------------------------------------------------------------- Q1: low-budget breakouts (TH)
 ALL_GENRES = "All genres"
 BUDGET_STEPS = [1e6, 2e6, 3e6, 5e6, 7e6, 9e6, 12e6, 15e6, 20e6, 30e6, 50e6, 100e6, 425e6]
@@ -517,4 +406,194 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         height=560, margin=dict(l=10, r=10, t=40, b=10), hoverlabel=dict(align="left"),
     )
+    return fig
+
+
+# ---------------------------------------------------------------- Q2: release-month seasonality (TH)
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+SEASON_MIN_FILMS = 5   # months with fewer films than this are grayed out as unreliable
+SEASON_MEASURES = {
+    "Typical return": "median_multiple",   # median worldwide gross / budget
+    "Hit rate": "hit_rate",                # share of films that grossed more than their budget
+}
+
+
+def season_films(df: pd.DataFrame, genre: str) -> pd.DataFrame:
+    """Films with reported box office in the chosen genre, plus `multiple` (gross / budget)."""
+    out = df[~df["no_reported_box_office"]].copy()   # a $0 gross would count as a flop
+    if genre != ALL_GENRES:
+        out = out[out[genre] == 1]
+    out["multiple"] = out["worldwide_gross"] / out["production_budget"]
+    return out
+
+
+def season_table(films: pd.DataFrame) -> pd.DataFrame:
+    """One row per release month: films released, typical return, hit rate, and the top film."""
+    rows = []
+    for m, name in enumerate(MONTHS, start=1):
+        sub = films[films["month"] == m]
+        top = sub.loc[sub["multiple"].idxmax()] if len(sub) else None
+        rows.append({
+            "month": name, "films": len(sub),
+            "median_multiple": sub["multiple"].median() if len(sub) else np.nan,
+            "hit_rate": (sub["multiple"] >= 1).mean() if len(sub) else np.nan,
+            "top_film": f"{top['movie']} ({top['multiple']:.1f}x)" if top is not None else "",
+        })
+    table = pd.DataFrame(rows)
+    table["reliable"] = table["films"] >= SEASON_MIN_FILMS
+    return table
+
+
+def season_figure(table: pd.DataFrame, measure: str, baseline: float, genre: str) -> go.Figure:
+    """Bars per release month for the chosen measure, compared with the genre's year-round value."""
+    col = SEASON_MEASURES[measure]
+    is_rate = col == "hit_rate"
+    blue, orange = PALETTE[0], PALETTE[1]
+    colors = [REF_COLOR if not ok else orange if v > baseline else blue
+              for v, ok in zip(table[col], table["reliable"])]
+    values = [f"{v:.0%}" if is_rate else f"{v:.1f}x" for v in table[col].fillna(0)]
+    notes = ["" if ok else "<br><i>Too few films to trust</i>" for ok in table["reliable"]]
+
+    fig = go.Figure(go.Bar(
+        x=table["month"], y=table[col], marker_color=colors, marker_line_width=0,
+        customdata=np.column_stack([values, table["films"], table["top_film"], notes]),
+        hovertemplate=(f"<b>%{{x}}</b><br>{measure}: <b>%{{customdata[0]}}</b><br>"
+                       "%{customdata[1]} films released<br>Top film: %{customdata[2]}"
+                       "%{customdata[3]}<extra></extra>"),
+    ))
+    label = "all films" if genre == ALL_GENRES else genre
+    base_text = f"{baseline:.0%}" if is_rate else f"{baseline:.1f}x"
+    fig.add_hline(y=baseline, line=dict(color=REF_COLOR, width=1.5, dash="dash"))
+    fig.add_annotation(text=f"Dashed line = {label}, all year: {base_text}", showarrow=False,
+                       xref="paper", yref="paper", x=0, y=1.06, xanchor="left",
+                       font=dict(size=12, color=REF_COLOR))
+    fig.update_layout(
+        height=480, margin=dict(l=10, r=10, t=40, b=10), bargap=0.25, showlegend=False,
+        yaxis=dict(title="Share that made money" if is_rate else "Median gross / budget",
+                   tickformat=".0%" if is_rate else None, ticksuffix="" if is_rate else "x",
+                   rangemode="tozero"),
+        hoverlabel=dict(align="left"),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------- Q3: number of genres (TH)
+GENRE_COUNT_ORDER = ["1", "2", "3", "4", "5+"]
+GENRE_COUNT_MIN_FILMS = 5   # bars with fewer films than this are grayed out as unreliable
+GENRE_COUNT_MEASURES = {
+    "Typical return": "median_multiple",        # median worldwide gross / budget
+    "Median budget": "median_budget",
+    "Median worldwide gross": "median_gross",
+}
+
+
+def genre_count_films(df: pd.DataFrame, primary: str) -> pd.DataFrame:
+    """Films with reported box office, plus `primary_genre` (first-listed genre),
+    `genre_count` ("1" to "5+") and `multiple` (gross / budget). Optionally one primary genre only."""
+    out = df[~df["no_reported_box_office"]].copy()   # a $0 gross would count as a flop
+    genre_lists = out["genres"].str.split(",")
+    out["primary_genre"] = genre_lists.str[0].str.strip()
+    out["genre_count"] = genre_lists.str.len().clip(upper=5).map(lambda n: "5+" if n == 5 else str(n))
+    out["multiple"] = out["worldwide_gross"] / out["production_budget"]
+    if primary != ALL_GENRES:
+        out = out[out["primary_genre"] == primary]
+    return out
+
+
+def genre_count_table(films: pd.DataFrame) -> pd.DataFrame:
+    """One row per genre count: films, median budget, median gross, typical return."""
+    table = (films.groupby("genre_count")
+             .agg(films=("movie", "count"), median_budget=("production_budget", "median"),
+                  median_gross=("worldwide_gross", "median"), median_multiple=("multiple", "median"))
+             .reindex(GENRE_COUNT_ORDER).reset_index())
+    table["films"] = table["films"].fillna(0).astype(int)
+    table["reliable"] = table["films"] >= GENRE_COUNT_MIN_FILMS
+    return table
+
+
+def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Figure:
+    """Bars by number of genres for the chosen measure (gray = too few films to trust)."""
+    col = GENRE_COUNT_MEASURES[measure]
+    is_money = col != "median_multiple"
+    colors = [PALETTE[0] if ok else REF_COLOR for ok in table["reliable"]]
+    notes = ["" if ok else "<br><i>Too few films to trust</i>" for ok in table["reliable"]]
+    budgets = [fmt_money(v) if pd.notna(v) else "–" for v in table["median_budget"]]
+    grosses = [fmt_money(v) if pd.notna(v) else "–" for v in table["median_gross"]]
+    returns = [f"{v:.1f}x" if pd.notna(v) else "–" for v in table["median_multiple"]]
+
+    fig = go.Figure(go.Bar(
+        x=table["genre_count"], y=table[col], marker_color=colors, marker_line_width=0,
+        customdata=np.column_stack([table["films"], budgets, grosses, returns, notes]),
+        hovertemplate=("<b>%{x} genre(s)</b><br>%{customdata[0]} films<br>"
+                       "Median budget: %{customdata[1]}<br>Median gross: %{customdata[2]}<br>"
+                       "Typical return: %{customdata[3]}%{customdata[4]}<extra></extra>"),
+    ))
+    label = "all films" if primary == ALL_GENRES else f"primary genre: {primary}"
+    fig.update_layout(
+        height=460, margin=dict(l=10, r=10, t=40, b=10), bargap=0.3, showlegend=False,
+        title=dict(text=f"{measure} by number of genres ({label})", font=dict(size=14)),
+        xaxis=dict(title="Number of genres the film is tagged with", type="category"),
+        yaxis=dict(title=measure, rangemode="tozero",
+                   tickprefix="$" if is_money else "", tickformat="~s" if is_money else None,
+                   ticksuffix="" if is_money else "x"),
+        hoverlabel=dict(align="left"),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------- outcome predictor (RS)
+OUTCOME_LABELS = ["Bust", "Middle", "Breakout"]
+OUTCOME_COLORS = ["#eb6834", "#8a8a85", "#2a78d6"]   # orange, gray, blue
+OUTCOME_BREAKOUT_ROI = 5.0                           # breakout = grossed 6x its budget or more
+OUTCOME_FEATURES = ["log_budget"] + GENRES
+
+
+def outcome_training_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Films with a usable ROI plus the model features (log10 budget; genre flags already in the CSV).
+    Only information known BEFORE release is used, so post-release columns can't leak the answer."""
+    out = df.dropna(subset=["roi"]).copy()
+    out["log_budget"] = np.log10(out["production_budget"])
+    return out
+
+
+def outcome_classes(roi: pd.Series) -> np.ndarray:
+    """0 = bust (ROI < 0), 1 = middle (0 <= ROI < 5), 2 = breakout (ROI >= 5)."""
+    return np.select([roi < 0, roi < OUTCOME_BREAKOUT_ROI], [0, 1], default=2)
+
+
+def train_outcome_model(df: pd.DataFrame):
+    """Three-class logistic regression: budget (scaled) + genre flags. C=0.1 shrinks the
+    coefficients gently so ~19 features on ~1,450 films don't overfit."""
+    films = outcome_training_data(df)
+    model = make_pipeline(StandardScaler(), LogisticRegression(C=0.1, max_iter=2000))
+    model.fit(films[OUTCOME_FEATURES], outcome_classes(films["roi"]))
+    return model
+
+
+def predict_outcomes(model, budget_millions: float, genres: list[str]) -> np.ndarray:
+    """Chances of [bust, middle, breakout] for one film idea; they sum to 1."""
+    row = {"log_budget": np.log10(budget_millions * 1e6)}
+    row.update({g: int(g in genres) for g in GENRES})
+    return model.predict_proba(pd.DataFrame([row])[OUTCOME_FEATURES])[0]
+
+
+def outcome_base_rates(df: pd.DataFrame) -> np.ndarray:
+    """Share of all films that busted / landed in the middle / broke out (for reference)."""
+    classes = outcome_classes(outcome_training_data(df)["roi"])
+    return np.bincount(classes, minlength=3) / len(classes)
+
+
+def outcome_figure(probs: np.ndarray) -> go.Figure:
+    """Bar chart of the three outcome chances, fixed order, one color per outcome."""
+    fig = go.Figure(go.Bar(
+        x=OUTCOME_LABELS, y=probs, marker_color=OUTCOME_COLORS,
+        text=[f"{v:.0%}" for v in probs], textposition="outside", cliponaxis=False,
+        hovertemplate="%{x}: %{y:.1%}<extra></extra>",
+    ))
+    fig.update_layout(
+        yaxis=dict(range=[0, 1], tickformat=".0%", title="Chance"), xaxis=dict(title=None),
+        margin=dict(t=20, b=10), height=380, showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.25)")
     return fig
