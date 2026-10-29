@@ -4,11 +4,13 @@ Pure data / plotting logic — no Streamlit calls — so it can be imported and 
 """
 
 
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 YEAR_MIN, YEAR_MAX = 2010, 2018  # years with a meaningful sample (~120-200 films each)
 GENRES = [
@@ -881,4 +883,62 @@ def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Fi
                    ticksuffix="" if is_money else "x"),
         hoverlabel=dict(align="left"),
     )
+    return fig
+
+
+# ---------------------------------------------------------------- outcome predictor (RS)
+OUTCOME_LABELS = ["Bust", "Middle", "Breakout"]
+OUTCOME_COLORS = ["#eb6834", "#8a8a85", "#2a78d6"]   # orange, gray, blue
+OUTCOME_BREAKOUT_ROI = 5.0                           # breakout = grossed 6x its budget or more
+OUTCOME_FEATURES = ["log_budget"] + GENRES
+
+
+def outcome_training_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Films with a usable ROI plus the model features (log10 budget; genre flags already in the CSV).
+    Only information known BEFORE release is used, so post-release columns can't leak the answer."""
+    out = df.dropna(subset=["roi"]).copy()
+    out["log_budget"] = np.log10(out["production_budget"])
+    return out
+
+
+def outcome_classes(roi: pd.Series) -> np.ndarray:
+    """0 = bust (ROI < 0), 1 = middle (0 <= ROI < 5), 2 = breakout (ROI >= 5)."""
+    return np.select([roi < 0, roi < OUTCOME_BREAKOUT_ROI], [0, 1], default=2)
+
+
+def train_outcome_model(df: pd.DataFrame):
+    """Three-class logistic regression: budget (scaled) + genre flags. C=0.1 shrinks the
+    coefficients gently so ~19 features on ~1,450 films don't overfit."""
+    films = outcome_training_data(df)
+    model = make_pipeline(StandardScaler(), LogisticRegression(C=0.1, max_iter=2000))
+    model.fit(films[OUTCOME_FEATURES], outcome_classes(films["roi"]))
+    return model
+
+
+def predict_outcomes(model, budget_millions: float, genres: list[str]) -> np.ndarray:
+    """Chances of [bust, middle, breakout] for one film idea; they sum to 1."""
+    row = {"log_budget": np.log10(budget_millions * 1e6)}
+    row.update({g: int(g in genres) for g in GENRES})
+    return model.predict_proba(pd.DataFrame([row])[OUTCOME_FEATURES])[0]
+
+
+def outcome_base_rates(df: pd.DataFrame) -> np.ndarray:
+    """Share of all films that busted / landed in the middle / broke out (for reference)."""
+    classes = outcome_classes(outcome_training_data(df)["roi"])
+    return np.bincount(classes, minlength=3) / len(classes)
+
+
+def outcome_figure(probs: np.ndarray) -> go.Figure:
+    """Bar chart of the three outcome chances, fixed order, one color per outcome."""
+    fig = go.Figure(go.Bar(
+        x=OUTCOME_LABELS, y=probs, marker_color=OUTCOME_COLORS,
+        text=[f"{v:.0%}" for v in probs], textposition="outside", cliponaxis=False,
+        hovertemplate="%{x}: %{y:.1%}<extra></extra>",
+    ))
+    fig.update_layout(
+        yaxis=dict(range=[0, 1], tickformat=".0%", title="Chance"), xaxis=dict(title=None),
+        margin=dict(t=20, b=10), height=380, showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.25)")
     return fig

@@ -7,6 +7,7 @@ from apputil import *
 st.set_page_config(page_title="Movie Budgets & ROI by Genre", page_icon="🎬", layout="wide")
 
 cached_load = st.cache_data(load_data)
+cached_outcome_model = st.cache_resource(train_outcome_model)   # trained once, reused on every rerun
 
 # ---------------------------------------------------------------- data source
 default_path = Path(__file__).parent / "movie_roi.csv"
@@ -71,14 +72,40 @@ risk_problem = ("No genres meet the minimum-films threshold for this year range.
                 if risk.empty else None)
 
 # ---------------------------------------------------------------- tabs
-(tab_curve, tab_budget_stats,
+(tab_predictor, tab_curve, tab_budget_stats,
  tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts, tab_release_month, tab_genre_count, tab_roi) = st.tabs([
-    "📈 Budget curves", "📋 Budget stats",
+    "🔮 Outcome predictor","📈 Budget curves", "📋 Budget stats",
     "📊 Risk vs. reward", "⭐ Blockbuster vs. bust",
     "📋 ROI stats", "🚀 Low-budget breakouts",
     "📅 Best release month", "🧩 Number of genres",
     "📈 ROI Relationships"
 ])
+
+# ===================== Outcome predictor (RS) =====================
+with tab_predictor:
+    st.subheader("Movie outcome predictor")
+    st.markdown(
+        "Pick a movie idea and see the odds that it **busts** (loses money), lands in the "
+        "**middle**, or is a **breakout** (grosses 6x its budget or more)."
+    )
+    # Trained on every 2010-2018 film, so the sidebar year filter doesn't change the model.
+    outcome_model = cached_outcome_model(df)
+
+    pred_budget = st.slider("Production budget (millions of dollars)", 1, 400, 60, key="pred_budget")
+    pred_genres = st.multiselect("Genres", GENRES, default=["Action", "Adventure"], key="pred_genres")
+    pred_probs = predict_outcomes(outcome_model, pred_budget, pred_genres)
+
+    for col, label, prob in zip(st.columns(3), OUTCOME_LABELS, pred_probs):
+        col.metric(label, f"{prob:.0%}")
+    st.plotly_chart(outcome_figure(pred_probs), width="stretch")
+
+    base = outcome_base_rates(df)
+    st.caption(
+        f"For reference, across all films from {YEAR_MIN}–{YEAR_MAX}: {base[0]:.0%} busted, "
+        f"{base[1]:.0%} landed in the middle, {base[2]:.0%} were breakouts. The model uses only "
+        "budget and genre (what a studio knows before release), so treat these as rough odds, "
+        "not predictions."
+    )
 
 # ======================= Budget distribution =======================
 with tab_curve:
