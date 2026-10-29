@@ -74,11 +74,7 @@ risk_problem = ("No genres meet the minimum-films threshold for this year range.
 # ---------------------------------------------------------------- tabs
 (tab_predictor, tab_curve, tab_budget_stats,
  tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts, tab_release_month, tab_genre_count, tab_roi) = st.tabs([
-    "🔮 Outcome predictor", "📈 Budget curves", "📋 Budget stats",
-    "📊 Risk vs. reward", "⭐ Blockbuster vs. bust", "📋 ROI stats", "🚀 Low-budget breakouts", "📅 Best release month", "🧩 Number of genres", "📈 ROI Relationships"
-(tab_curve, tab_budget_stats,
- tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts, tab_release_month, tab_genre_count, tab_roi) = st.tabs([
-    "📈 Budget curves", "📋 Budget stats",
+    "🔮 Outcome predictor","📈 Budget curves", "📋 Budget stats",
     "📊 Risk vs. reward", "⭐ Blockbuster vs. bust",
     "📋 ROI stats", "🚀 Low-budget breakouts",
     "📅 Best release month", "🧩 Number of genres",
