@@ -4,11 +4,13 @@ Pure data / plotting logic — no Streamlit calls — so it can be imported and 
 """
 
 
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 YEAR_MIN, YEAR_MAX = 2010, 2018  # years with a meaningful sample (~120-200 films each)
 GENRES = [
@@ -406,6 +408,351 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
     )
     return fig
 
+# ------------------------------------------------------------
+# ROI Relationship Analysis - Vasundara
+# ------------------------------------------------------------
+ROI_VARIABLES = {
+    "Popularity": "popularity",
+    "Production Budget": "production_budget",
+    "Domestic Gross": "domestic_gross",
+    "Foreign Gross": "foreign_gross",
+    "Worldwide Gross": "worldwide_gross",
+    "Vote Average": "vote_average",
+}
+
+
+def prepare_roi_data(df):
+    """
+    Prepare one consistent dataset for ROI analysis.
+    """
+
+    variables = list(ROI_VARIABLES.values())
+
+    data = df.copy()
+
+    if "no_reported_box_office" in data.columns:
+        data = data[
+            data["no_reported_box_office"] == False
+        ].copy()
+
+    data = (
+        data[variables + ["roi"]]
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+        .copy()
+    )
+
+    return data
+
+
+def roi_relationship_data(df, variable):
+    """
+    Calculate correlation and quartile ROI statistics.
+    """
+
+    data = prepare_roi_data(df)
+
+    correlation = data[variable].corr(data["roi"])
+
+    data["Level"] = pd.qcut(
+        data[variable],
+        q=4,
+        labels=["Low", "Medium", "High", "Very High"],
+        duplicates="drop",
+    )
+
+    summary = (
+        data.groupby("Level", observed=True)
+        .agg(
+            min_value=(variable, "min"),
+            max_value=(variable, "max"),
+            median_roi=("roi", "median"),
+            mean_roi=("roi", "mean"),
+            movies=("roi", "size"),
+        )
+        .reset_index()
+    )
+
+    movie_count = len(data)
+
+    return summary, correlation, movie_count
+
+
+def format_range_value(value, display_name):
+    """
+    Format the quartile range values.
+    """
+
+    money_variables = {
+        "Production Budget",
+        "Domestic Gross",
+        "Foreign Gross",
+        "Worldwide Gross",
+    }
+
+    if display_name in money_variables:
+
+        if abs(value) >= 1_000_000_000:
+            return f"${value / 1_000_000_000:.2f}B"
+
+        elif abs(value) >= 1_000_000:
+            return f"${value / 1_000_000:.2f}M"
+
+        elif abs(value) >= 1_000:
+            return f"${value / 1_000:.1f}K"
+
+        else:
+            return f"${value:,.0f}"
+
+    return f"{value:.2f}"
+
+
+def create_range_table(summary, display_name):
+    """
+    Create the Low, Medium, High, Very High range table.
+    """
+
+    table = summary.copy()
+
+    table["Range"] = table.apply(
+        lambda row: (
+            f"{format_range_value(row['min_value'], display_name)}"
+            f" – "
+            f"{format_range_value(row['max_value'], display_name)}"
+        ),
+        axis=1,
+    )
+
+    table["median_roi"] = table["median_roi"].round(2)
+    table["mean_roi"] = table["mean_roi"].round(2)
+
+    table = table[
+        [
+            "Level",
+            "Range",
+            "median_roi",
+            "mean_roi",
+            "movies",
+        ]
+    ]
+
+    table = table.rename(
+        columns={
+            "median_roi": "Median ROI",
+            "mean_roi": "Mean ROI",
+            "movies": "Movies",
+        }
+    )
+
+    return table
+
+
+def correlation_description(correlation):
+    """
+    Describe correlation strength and direction.
+    """
+
+    abs_correlation = abs(correlation)
+
+    if abs_correlation < 0.10:
+        strength = "very weak"
+
+    elif abs_correlation < 0.30:
+        strength = "weak"
+
+    elif abs_correlation < 0.50:
+        strength = "moderate"
+
+    elif abs_correlation < 0.70:
+        strength = "strong"
+
+    else:
+        strength = "very strong"
+
+    if correlation > 0:
+        direction = "positive"
+
+    elif correlation < 0:
+        direction = "negative"
+
+    else:
+        direction = "neutral"
+
+    return strength, direction
+
+
+def roi_key_insight(
+    summary,
+    correlation,
+    display_name,
+    roi_statistic,
+):
+    """
+    Generate a short automatic interpretation.
+    """
+
+    if roi_statistic == "Median ROI":
+        value_column = "median_roi"
+    else:
+        value_column = "mean_roi"
+
+    low_roi = summary.iloc[0][value_column]
+    high_roi = summary.iloc[-1][value_column]
+
+    if high_roi > low_roi:
+        comparison = "higher"
+
+    elif high_roi < low_roi:
+        comparison = "lower"
+
+    else:
+        comparison = "approximately the same"
+
+    strength, direction = correlation_description(
+        correlation
+    )
+
+    insight = (
+        f"The Very High {display_name.lower()} group has a "
+        f"{comparison} {roi_statistic.lower()} than the Low group "
+        f"({high_roi:.2f} compared with {low_roi:.2f}). "
+        f"The Pearson correlation is {correlation:.3f}, "
+        f"indicating a {strength} {direction} linear relationship."
+    )
+
+    return insight
+
+
+def roi_comparison_metrics(summary, roi_statistic):
+    """
+    Find highest ROI group and calculate change from Low to Very High.
+    """
+
+    if roi_statistic == "Median ROI":
+        value_column = "median_roi"
+    else:
+        value_column = "mean_roi"
+
+    best_row = summary.loc[
+        summary[value_column].idxmax()
+    ]
+
+    low_value = summary.iloc[0][value_column]
+    very_high_value = summary.iloc[-1][value_column]
+
+    roi_change = very_high_value - low_value
+
+    return {
+        "highest_group": str(best_row["Level"]),
+        "highest_roi": float(best_row[value_column]),
+        "roi_change": float(roi_change),
+    }
+
+
+def strongest_roi_relationship(df):
+    """
+    Find the characteristic with the strongest absolute correlation with ROI.
+    """
+
+    data = prepare_roi_data(df)
+
+    correlations = {
+        display_name: data[column].corr(data["roi"])
+        for display_name, column in ROI_VARIABLES.items()
+    }
+
+    valid_correlations = {
+        name: value
+        for name, value in correlations.items()
+        if pd.notna(value)
+    }
+
+    strongest_name = max(
+        valid_correlations,
+        key=lambda name: abs(valid_correlations[name]),
+    )
+
+    strongest_correlation = valid_correlations[
+        strongest_name
+    ]
+
+    return strongest_name, float(strongest_correlation)
+
+
+def roi_relationship_figure(
+    df,
+    variable,
+    display_name,
+    roi_statistic,
+):
+    """
+    Create the interactive ROI relationship graph.
+    """
+
+    summary, correlation, movie_count = (
+        roi_relationship_data(
+            df,
+            variable,
+        )
+    )
+
+    if roi_statistic == "Median ROI":
+        value_column = "median_roi"
+    else:
+        value_column = "mean_roi"
+
+    plot_summary = summary.copy()
+
+    plot_summary["range_label"] = plot_summary.apply(
+        lambda row: (
+            f"{format_range_value(row['min_value'], display_name)}"
+            f" – "
+            f"{format_range_value(row['max_value'], display_name)}"
+        ),
+        axis=1,
+    )
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_summary["Level"],
+            y=plot_summary[value_column],
+            mode="lines+markers",
+            marker=dict(size=12),
+            line=dict(width=3),
+            customdata=plot_summary[
+                [
+                    "range_label",
+                    "median_roi",
+                    "mean_roi",
+                    "movies",
+                ]
+            ],
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "Range: %{customdata[0]}<br>"
+                "Median ROI: %{customdata[1]:.2f}<br>"
+                "Mean ROI: %{customdata[2]:.2f}<br>"
+                "Movies: %{customdata[3]}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    fig.update_layout(
+        title=(
+            f"{display_name} vs ROI | "
+            f"Pearson r = {correlation:.3f}"
+        ),
+        xaxis_title=f"{display_name} Level",
+        yaxis_title=roi_statistic,
+        template="plotly_white",
+        height=550,
+        hovermode="closest",
+    )
+
+    return fig, correlation, summary, movie_count
 
 # ---------------------------------------------------------------- Q2: release-month seasonality (TH)
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -536,4 +883,62 @@ def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Fi
                    ticksuffix="" if is_money else "x"),
         hoverlabel=dict(align="left"),
     )
+    return fig
+
+
+# ---------------------------------------------------------------- outcome predictor (RS)
+OUTCOME_LABELS = ["Bust", "Middle", "Breakout"]
+OUTCOME_COLORS = ["#eb6834", "#8a8a85", "#2a78d6"]   # orange, gray, blue
+OUTCOME_BREAKOUT_ROI = 5.0                           # breakout = grossed 6x its budget or more
+OUTCOME_FEATURES = ["log_budget"] + GENRES
+
+
+def outcome_training_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Films with a usable ROI plus the model features (log10 budget; genre flags already in the CSV).
+    Only information known BEFORE release is used, so post-release columns can't leak the answer."""
+    out = df.dropna(subset=["roi"]).copy()
+    out["log_budget"] = np.log10(out["production_budget"])
+    return out
+
+
+def outcome_classes(roi: pd.Series) -> np.ndarray:
+    """0 = bust (ROI < 0), 1 = middle (0 <= ROI < 5), 2 = breakout (ROI >= 5)."""
+    return np.select([roi < 0, roi < OUTCOME_BREAKOUT_ROI], [0, 1], default=2)
+
+
+def train_outcome_model(df: pd.DataFrame):
+    """Three-class logistic regression: budget (scaled) + genre flags. C=0.1 shrinks the
+    coefficients gently so ~19 features on ~1,450 films don't overfit."""
+    films = outcome_training_data(df)
+    model = make_pipeline(StandardScaler(), LogisticRegression(C=0.1, max_iter=2000))
+    model.fit(films[OUTCOME_FEATURES], outcome_classes(films["roi"]))
+    return model
+
+
+def predict_outcomes(model, budget_millions: float, genres: list[str]) -> np.ndarray:
+    """Chances of [bust, middle, breakout] for one film idea; they sum to 1."""
+    row = {"log_budget": np.log10(budget_millions * 1e6)}
+    row.update({g: int(g in genres) for g in GENRES})
+    return model.predict_proba(pd.DataFrame([row])[OUTCOME_FEATURES])[0]
+
+
+def outcome_base_rates(df: pd.DataFrame) -> np.ndarray:
+    """Share of all films that busted / landed in the middle / broke out (for reference)."""
+    classes = outcome_classes(outcome_training_data(df)["roi"])
+    return np.bincount(classes, minlength=3) / len(classes)
+
+
+def outcome_figure(probs: np.ndarray) -> go.Figure:
+    """Bar chart of the three outcome chances, fixed order, one color per outcome."""
+    fig = go.Figure(go.Bar(
+        x=OUTCOME_LABELS, y=probs, marker_color=OUTCOME_COLORS,
+        text=[f"{v:.0%}" for v in probs], textposition="outside", cliponaxis=False,
+        hovertemplate="%{x}: %{y:.1%}<extra></extra>",
+    ))
+    fig.update_layout(
+        yaxis=dict(range=[0, 1], tickformat=".0%", title="Chance"), xaxis=dict(title=None),
+        margin=dict(t=20, b=10), height=380, showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.25)")
     return fig
