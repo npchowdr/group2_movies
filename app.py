@@ -1,14 +1,16 @@
 from pathlib import Path
-
+ 
 import numpy as np
 import streamlit as st
-
+ 
 from apputil import *
 st.set_page_config(page_title="Movie Budgets & ROI by Genre", page_icon="🎬", layout="wide")
+ 
 
 cached_load = st.cache_data(load_data)
+cached_outcome_films = st.cache_data(load_outcome_films)
 cached_outcome_model = st.cache_resource(train_outcome_model)   # trained once, reused on every rerun
-
+ 
 # ---------------------------------------------------------------- data source
 default_path = Path(__file__).parent / "movie_roi.csv"
 with st.sidebar:
@@ -20,7 +22,7 @@ if source is None:
     st.info("Upload **movie_roi.csv** in the sidebar to get started.")
     st.stop()
 df = cached_load(source)
-
+ 
 # ---------------------------------------------------------------- controls
 with st.sidebar:
     # Shared by every tab
@@ -28,7 +30,7 @@ with st.sidebar:
     years = st.slider("Release years", YEAR_MIN, YEAR_MAX, (YEAR_MIN, YEAR_MAX))
     exclude_no_bo = st.checkbox("Exclude films with no reported box office", value=False,
                                 help="97 films in 2010–2018 have a budget but $0 gross.")
-
+ 
     # Budget distribution tabs
     with st.expander("🎬 Budget distribution options", expanded=True):
         genres = st.multiselect("Genres", GENRES, default=DEFAULT_GENRES)
@@ -40,23 +42,23 @@ with st.sidebar:
         bw_adjust = st.slider("Curve smoothing", 0.3, 2.0, 1.0, 0.1)
         show_medians = st.checkbox("Show median lines", value=True)
         show_all = st.checkbox("Show 'All films' reference curve", value=True)
-
+ 
     # Risk vs. reward tabs
     with st.expander("🎲 Risk vs. reward options", expanded=True):
         min_films = st.slider("Minimum films per genre", 5, 30, 10,
                               help="Genres with fewer films give unreliable volatility estimates.")
         genre_choice = st.selectbox("Spotlight genre", GENRES, index=GENRES.index(DEFAULT_GENRE))
-
+ 
 data = filter_data(df, years, exclude_no_bo)
 all_budgets = data["production_budget"].to_numpy(float)
-
+ 
 # ---------------------------------------------------------------- header
 st.title("🎬 Movie Budgets & ROI by Genre")
 st.caption(
     f"{len(data):,} films released {years[0]}–{years[1]}. Films with multiple genres "
     "count toward each of their genres, so genre results overlap."
 )
-
+ 
 # Compute both datasets up front. Instead of st.stop(), problems are shown
 # inside the affected tabs so the other section keeps working.
 groups = genre_budgets(data, genres) if genres else None
@@ -66,49 +68,67 @@ elif not groups:
     budget_problem = "Not enough films for the selected genres and years."
 else:
     budget_problem = None
-
+ 
 risk = get_genre_risk_reward(data, GENRES, min_films)
 risk_problem = ("No genres meet the minimum-films threshold for this year range."
                 if risk.empty else None)
-
+ 
 # ---------------------------------------------------------------- tabs
-(tab_predictor, tab_curve, tab_budget_stats,
- tab_risk, tab_extremes, tab_risk_stats, tab_low_budget_breakouts, tab_release_month, tab_genre_count, tab_roi) = st.tabs([
-    "🔮 Outcome predictor","📈 Budget curves", "📋 Budget stats",
-    "📊 Risk vs. reward", "⭐ Blockbuster vs. bust",
-    "📋 ROI stats", "🚀 Low-budget breakouts",
-    "📅 Best release month", "🧩 Number of genres",
-    "📈 ROI Relationships"
+# Fewer tabs, so there is less clicking: related views share a tab and read top to bottom.
+# The old per-view names are kept as aliases, so each section below still says which tab it lives in.
+tab_predictor, tab_budgets, tab_risk_reward, tab_timing = st.tabs([
+    "🔮 Outcome predictor", "💰 Budgets", "⚖️ Risk & reward", "🚀 Breakouts & timing",
 ])
-
-# ===================== Outcome predictor (RS) =====================
+tab_curve = tab_budget_stats = tab_budgets
+tab_risk = tab_extremes = tab_risk_stats = tab_roi = tab_risk_reward
+tab_low_budget_breakouts = tab_release_month = tab_genre_count = tab_timing
+ 
+# ===================== Outcome predictor =====================
 with tab_predictor:
     st.subheader("Movie outcome predictor")
     st.markdown(
-        "Pick a movie idea and see the odds that it **busts** (loses money), lands in the "
+        "Describe a movie idea and see the odds that it **busts** (loses money), lands in the "
         "**middle**, or is a **breakout** (grosses 6x its budget or more)."
     )
-    # Trained on every 2010-2018 film, so the sidebar year filter doesn't change the model.
-    outcome_model = cached_outcome_model(df)
-
-    pred_budget = st.slider("Production budget (millions of dollars)", 1, 400, 60, key="pred_budget")
-    pred_genres = st.multiselect("Genres", GENRES, default=["Action", "Adventure"], key="pred_genres")
-    pred_probs = predict_outcomes(outcome_model, pred_budget, pred_genres)
-
-    for col, label, prob in zip(st.columns(3), OUTCOME_LABELS, pred_probs):
-        col.metric(label, f"{prob:.0%}")
-    st.plotly_chart(outcome_figure(pred_probs), width="stretch")
-
-    base = outcome_base_rates(df)
-    st.caption(
-        f"For reference, across all films from {YEAR_MIN}–{YEAR_MAX}: {base[0]:.0%} busted, "
-        f"{base[1]:.0%} landed in the middle, {base[2]:.0%} were breakouts. The model uses only "
-        "budget and genre (what a studio knows before release), so treat these as rough odds, "
-        "not predictions."
-    )
-
+    outcome_file = Path(__file__).parent / "data" / "movie_roi_tmdb.csv"
+    if not outcome_file.exists():
+        st.info("The predictor needs **data/movie_roi_tmdb.csv** (the TMDB-enriched file) next to this script.")
+    else:
+        # Trained on every 2010-2018 film, so the sidebar filters don't change the model.
+        outcome_films = cached_outcome_films(outcome_file)
+        outcome_model = cached_outcome_model(outcome_films)
+ 
+        inputs, results = st.columns([1, 1.25], gap="large")
+        with inputs:
+            pred_budget = st.slider("Production budget (millions of dollars)", 1, 400, 60, key="pred_budget")
+            pred_genres = st.multiselect("Genres", GENRES, default=["Action", "Adventure"], key="pred_genres")
+            m1, m2 = st.columns(2)
+            pred_month = m1.selectbox("Release month", OUTCOME_MONTHS, index=6, key="pred_month")
+            pred_rating = m2.selectbox("Rating", OUTCOME_RATINGS, index=2, key="pred_rating")
+            pred_runtime = st.slider("Runtime (minutes)", 70, 200, 115, key="pred_runtime")
+            pred_sequel = st.toggle("Sequel or part of a franchise", value=False, key="pred_sequel")
+            pred_sources = st.multiselect("Based on", list(OUTCOME_SOURCES), key="pred_sources",
+                                          help="Leave empty for an original story.")
+ 
+        pred_probs = predict_outcomes(
+            outcome_model, pred_budget, pred_genres, OUTCOME_MONTHS.index(pred_month) + 1,
+            pred_rating, pred_runtime, pred_sequel, pred_sources)
+        with results:
+            for col, label, prob in zip(st.columns(3), OUTCOME_LABELS, pred_probs):
+                col.metric(label, f"{prob:.0%}")
+            st.plotly_chart(outcome_figure(pred_probs), width="stretch")
+ 
+        base = outcome_base_rates(outcome_films)
+        st.caption(
+            f"For reference, across all films from {YEAR_MIN}–{YEAR_MAX}: {base[0]:.0%} busted, "
+            f"{base[1]:.0%} landed in the middle, {base[2]:.0%} were breakouts. The model only uses what "
+            "a studio knows before release (budget, genre, release month, rating, runtime, sequel status "
+            "and source material), so treat these as rough odds, not predictions."
+        )
+ 
 # ======================= Budget distribution =======================
 with tab_curve:
+    st.subheader("Budget distribution by genre")
     if budget_problem:
         st.warning(budget_problem)
     else:
@@ -120,8 +140,10 @@ with tab_curve:
         st.plotly_chart(fig, width="stretch")
         if show_medians:
             st.caption("Dashed vertical lines mark each genre's median budget.")
-
+ 
 with tab_budget_stats:
+    st.divider()
+    st.subheader("Budget stats")
     if budget_problem:
         st.warning(budget_problem)
     else:
@@ -136,13 +158,13 @@ with tab_budget_stats:
                 "% over $100M": st.column_config.NumberColumn(format="%.0f%%"),
             },
         )
-
+ 
         top, bottom = stats.iloc[0], stats.iloc[-1]
         c1, c2, c3 = st.columns(3)
         c1.metric("Highest median budget", top["Genre"], fmt_money(top["Median"]), delta_color="off")
         c2.metric("Lowest median budget", bottom["Genre"], fmt_money(bottom["Median"]), delta_color="off")
         c3.metric("All films median", fmt_money(float(np.median(all_budgets))))
-
+ 
     # This table covers all genres, so it doesn't depend on the genre selection
     st.subheader("Average budget and standard deviation by genre")
     st.caption("All genres, using the year range and box-office filter from the sidebar.")
@@ -155,9 +177,10 @@ with tab_budget_stats:
             "Std deviation": st.column_config.NumberColumn(format="$%.1fM"),
         },
     )
-
+ 
 # ========================= Risk vs. reward =========================
 with tab_risk:
+    st.subheader("Risk vs. reward")
     if risk_problem:
         st.warning(risk_problem)
     else:
@@ -167,8 +190,10 @@ with tab_risk:
             "higher = more boom-or-bust. Bubble size = number of films. Only standout "
             "genres are labeled on the chart — hover any bubble to see the rest."
         )
-
+ 
 with tab_extremes:
+    st.divider()
+    st.subheader("Blockbuster vs. bust")
     subset, biggest, worst = genre_extremes(data, genre_choice)
     st.plotly_chart(extremes_figure(subset, biggest, worst, genre_choice), width="stretch")
     st.caption(f"Every {genre_choice} film by budget and ROI, with the biggest-budget film "
@@ -187,8 +212,10 @@ with tab_extremes:
         f"{fmt_money(worst['production_budget'])} of budget, and it lost "
         f"{abs(worst['roi']) * 100:.0f}% of that. Same genre, opposite outcomes."
     )
-
+ 
 with tab_risk_stats:
+    st.divider()
+    st.subheader("ROI stats")
     if risk_problem:
         st.warning(risk_problem)
     else:
@@ -206,13 +233,13 @@ with tab_risk_stats:
                   f"CV {most_consistent['coefficient_of_variation']:.2f}", delta_color="off")
         c2.metric("Most unpredictable genre", most_volatile["genre"],
                   f"CV {most_volatile['coefficient_of_variation']:.2f}", delta_color="off")
-
-# ===================== Low-budget breakouts (TH) =====================
+ 
+# ===================== Low-budget breakouts =====================
 with tab_low_budget_breakouts:
     st.subheader("Low-budget breakout finder")
     st.caption("Which low-budget films earned far more than they cost, and what do they have in common? "
                "Set a budget and a genre to see how often that kind of film breaks out.")
-
+ 
     b1, b2, b3 = st.columns(3)
     max_budget = b1.select_slider("Budget cap", BUDGET_STEPS, value=9e6, format_func=fmt_money,
                                   help="Only films made for this much or less count as 'your selection'.")
@@ -221,7 +248,7 @@ with tab_low_budget_breakouts:
     multiple = b3.slider("Breakout multiple", 2, 20, 6, format="%dx",
                          help="A film is a breakout if its worldwide gross is at least this many times "
                               "its budget. 6x is the same as ROI >= 5.")
-
+ 
     tagged = breakout_tag(data, max_budget, breakout_genre, multiple)
     s = breakout_summary(tagged)
     if s["films"] == 0:
@@ -239,11 +266,11 @@ with tab_low_budget_breakouts:
         m4.metric("Lost money", f"{s['lost_money']:.0%}", help="Share that grossed less than their budget.")
         if s["films"] < 10:
             st.caption(f"Only {s['films']} films match, so these rates are not reliable.")
-
+ 
         st.plotly_chart(breakout_figure(data, max_budget, breakout_genre, multiple), width="stretch")
         st.caption(f"{len(tagged):,} films released {years[0]}–{years[1]} with reported box office "
                    "(films with no reported gross are always left out here). Hover a dot to see the film.")
-
+ 
         with st.expander(f"The {s['breakouts']} breakout films"):
             hits = tagged[tagged["selected"] & tagged["breakout"]].sort_values("multiple", ascending=False)
             st.dataframe(
@@ -256,20 +283,21 @@ with tab_low_budget_breakouts:
                     "worldwide_gross": st.column_config.NumberColumn("Worldwide gross", format="dollar"),
                     "multiple": st.column_config.NumberColumn("Gross / budget", format="%.1fx"),
                 })
-
-# ===================== Release-month seasonality (TH) =====================
+ 
+# ===================== Release-month seasonality =====================
 with tab_release_month:
+    st.divider()
     st.subheader("When should you release it?")
     st.caption("When in the year do movies do best, and does each genre have its own best season? "
                "Pick a genre to see how its films performed by release month.")
-
+ 
     r1, r2 = st.columns(2)
     season_genre = r1.selectbox("Genre", [ALL_GENRES] + GENRES, key="season_genre",
                                 help="A film counts toward every genre it is tagged with.")
     measure = r2.radio("Measure", list(SEASON_MEASURES), horizontal=True,
                        help="Typical return = median worldwide gross / budget. "
                             "Hit rate = share of films that grossed more than their budget.")
-
+ 
     films = season_films(data, season_genre)
     if films.empty:
         st.warning(f"No {season_genre} films with reported box office in {years[0]}–{years[1]}.")
@@ -282,7 +310,7 @@ with tab_release_month:
         else:
             fmt, vs_year = (lambda v: f"{v:.1f}x"), (lambda v: f"{v - baseline:+.1f}x vs. all year")
         trusted = months[months["reliable"]]
-
+ 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Films", f"{len(films):,}")
         if len(trusted) < 2:
@@ -295,34 +323,35 @@ with tab_release_month:
         busiest = months.loc[months["films"].idxmax()]
         m4.metric("Busiest month", busiest["month"], f"{busiest['films']} films released", delta_color="off",
                   help="Most crowded release month. Compare it with the best month: they are often not the same.")
-
+ 
         st.plotly_chart(season_figure(months, measure, baseline, season_genre), width="stretch")
         st.caption(f"Orange = better than this genre's year-round value, blue = worse. Gray months have fewer "
                    f"than {SEASON_MIN_FILMS} films and aren't used for best/worst. Films with no reported "
                    "gross are left out. Hover a bar for the top film that month.")
-
-# ===================== Number of genres (TH) =====================
+ 
+# ===================== Number of genres =====================
 with tab_genre_count:
+    st.divider()
     st.subheader("Does mixing genres pay off?")
     st.caption("For films tagged with several genres, does the number of genres matter, or only the "
                "primary (first-listed) genre? Switch the measure to compare budget, gross, and return.")
-
+ 
     all_count_films = genre_count_films(data, ALL_GENRES)
     primary_counts = all_count_films["primary_genre"].value_counts()
     primaries = [g for g in GENRES if primary_counts.get(g, 0) >= 30]   # enough films to split 5 ways
-
+ 
     g1, g2 = st.columns(2)
     primary = g1.selectbox("Primary genre", [ALL_GENRES] + primaries, key="count_primary",
                            help="The first genre a film is listed under. Only genres with 30+ films are shown.")
     count_measure = g2.radio("Measure", list(GENRE_COUNT_MEASURES), horizontal=True, key="count_measure")
-
+ 
     count_films = genre_count_films(data, primary)
     if count_films.empty:
         st.warning(f"No films with primary genre {primary} in {years[0]}–{years[1]}.")
     else:
         few = count_films[count_films["genre_count"].isin(["1", "2"])]
         many = count_films[count_films["genre_count"].isin(["4", "5+"])]
-
+ 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Films", f"{len(count_films):,}")
         if len(few) < GENRE_COUNT_MIN_FILMS or len(many) < GENRE_COUNT_MIN_FILMS:
@@ -338,57 +367,58 @@ with tab_genre_count:
             c4.metric("Return, 4+ genres", f"{many_return:.1f}x",
                       f"{many_return - few_return:+.1f}x vs. 1–2 genres",
                       help="Typical return = median worldwide gross / budget. Budget and gross deltas are ratios: 4.0x = four times as much.")
-
+ 
         st.plotly_chart(genre_count_figure(genre_count_table(count_films), count_measure, primary),
                         width="stretch")
         st.caption(f"Gray bars have fewer than {GENRE_COUNT_MIN_FILMS} films. Films with no reported gross "
                    "are left out. Hover a bar to see budget, gross, and return together.")
-
+ 
 # ------------------------------------------------------------
-# ROI Relationship Analysis - Vasundara
+# ROI Relationship Analysis
 # ------------------------------------------------------------
-
+ 
 with tab_roi:
-
+    st.divider()
+ 
     st.subheader(
         "How Movie Characteristics Relate to ROI"
     )
-
+ 
     st.write(
         "Explore how different movie characteristics relate to ROI. "
         "Movies are divided into four approximately equal groups: "
         "Low, Medium, High, and Very High."
     )
-
+ 
     # --------------------------------------------------------
     # Choose movie characteristic
     # --------------------------------------------------------
-
+ 
     selected_name = st.selectbox(
         "Choose a movie characteristic",
         list(ROI_VARIABLES.keys()),
         key="roi_relationship_variable",
     )
-
+ 
     selected_variable = ROI_VARIABLES[
         selected_name
     ]
-
+ 
     # --------------------------------------------------------
     # NEW 1: Mean vs Median toggle
     # --------------------------------------------------------
-
+ 
     roi_statistic = st.radio(
         "Choose ROI summary statistic",
         ["Median ROI", "Mean ROI"],
         horizontal=True,
         key="roi_statistic_choice",
     )
-
+ 
     # --------------------------------------------------------
     # Create visualization
     # --------------------------------------------------------
-
+ 
     fig, correlation, summary, movie_count = (
         roi_relationship_figure(
             df,
@@ -397,47 +427,47 @@ with tab_roi:
             roi_statistic,
         )
     )
-
+ 
     st.plotly_chart(
         fig,
         width="stretch",
     )
-
+ 
     # --------------------------------------------------------
     # Main metrics
     # --------------------------------------------------------
-
+ 
     col1, col2 = st.columns(2)
-
+ 
     with col1:
         st.metric(
             "Pearson correlation (r)",
             f"{correlation:.3f}",
         )
-
+ 
     with col2:
         st.metric(
             "Movies analyzed",
             f"{movie_count:,}",
         )
-
+ 
     # --------------------------------------------------------
     # NEW 2, 3, 4: Quick analysis
     # --------------------------------------------------------
-
+ 
     comparison = roi_comparison_metrics(
         summary,
         roi_statistic,
     )
-
+ 
     strongest_name, strongest_r = (
         strongest_roi_relationship(df)
     )
-
+ 
     st.subheader("Quick Analysis")
-
+ 
     col3, col4, col5 = st.columns(3)
-
+ 
     # Strongest relationship
     with col3:
         st.metric(
@@ -445,7 +475,7 @@ with tab_roi:
             strongest_name,
             f"r = {strongest_r:.3f}",
         )
-
+ 
     # Highest ROI group
     with col4:
         st.metric(
@@ -453,61 +483,62 @@ with tab_roi:
             comparison["highest_group"],
             f"{comparison['highest_roi']:.2f} ROI",
         )
-
+ 
     # Low to Very High change
     with col5:
         st.metric(
             "Low → Very High ROI Change",
             f"{comparison['roi_change']:+.2f}",
         )
-
+ 
     # --------------------------------------------------------
     # Key Insight
     # --------------------------------------------------------
-
+ 
     st.subheader("Key Insight")
-
+ 
     insight = roi_key_insight(
         summary,
         correlation,
         selected_name,
         roi_statistic,
     )
-
+ 
     st.info(insight)
-
+ 
     # --------------------------------------------------------
     # Quartile ranges
     # --------------------------------------------------------
-
+ 
     st.subheader(
         f"{selected_name} Group Ranges"
     )
-
+ 
     st.write(
         "The ranges below show what Low, Medium, High, "
         "and Very High represent for the selected characteristic."
     )
-
+ 
     range_table = create_range_table(
         summary,
         selected_name,
     )
-
+ 
     st.dataframe(
         range_table,
         width="stretch",
         hide_index=True,
     )
-
+ 
     st.caption(
         "Each level contains approximately 25% of the movies. "
         "Hover over the graph to see the value range, median ROI, "
         "mean ROI, and number of movies in each group."
     )
-
+ 
     st.caption(
         "The Pearson correlation and strongest relationship "
         "are calculated using the movies remaining after the "
         "current Streamlit filters."
     )
+ 
