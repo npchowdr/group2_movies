@@ -7,7 +7,7 @@ Predicts three things for a film, using only what a studio knows before making i
     3. Breakout:  grossed at least 6x its budget             -> Random Forest classifier
 
 A Random Forest trains hundreds of decision trees, each on a random sample of the films
-and inputs, and averages their predictions ("bagging"). Averaging many independent trees
+and inputs, and averages their predictions. Averaging many independent trees
 makes it hard for a few extreme films to throw the model off.
 
 Trained on films released 2010-2016 and tested on 2017-2018 (films it never saw).
