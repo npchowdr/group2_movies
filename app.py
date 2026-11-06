@@ -5,6 +5,34 @@ import streamlit as st
  
 from apputil import *
 st.set_page_config(page_title="Movie Budgets & ROI by Genre", page_icon="🎬", layout="wide")
+
+
+# ---------------------------------------------------------------- background image
+@st.cache_data
+def _background_b64(path):
+    import base64
+    return base64.b64encode(Path(path).read_bytes()).decode()
+
+
+_bg_path = Path(__file__).parent / "black_background_image.jpg"
+# How much to dim the background image: 0 = full-strength image, 1 = solid black.
+BG_DIM = 0.8
+if _bg_path.exists():
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-image: linear-gradient(rgba(14, 17, 23, {BG_DIM}), rgba(14, 17, 23, {BG_DIM})),
+                              url("data:image/jpeg;base64,{_background_b64(str(_bg_path))}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }}
+        [data-testid="stHeader"] {{ background: transparent; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
  
 
 cached_load = st.cache_data(load_data)
