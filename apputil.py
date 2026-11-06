@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -331,7 +332,7 @@ def mean_std_table(df, genres=GENRES):
     return pd.DataFrame(rows).sort_values("Average budget", ascending=False).reset_index(drop=True)
 
 
-# ---------------------------------------------------------------- Q1: low-budget breakouts (TH)
+# ---------------------------------------------------------------- Q1: low-budget breakouts
 ALL_GENRES = "All genres"
 BUDGET_STEPS = [1e6, 2e6, 3e6, 5e6, 7e6, 9e6, 12e6, 15e6, 20e6, 30e6, 50e6, 100e6, 425e6]
 
@@ -409,7 +410,7 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
     return fig
 
 # ------------------------------------------------------------
-# ROI Relationship Analysis - Vasundara
+# ROI Relationship Analysis
 # ------------------------------------------------------------
 ROI_VARIABLES = {
     "Popularity": "popularity",
@@ -754,7 +755,7 @@ def roi_relationship_figure(
 
     return fig, correlation, summary, movie_count
 
-# ---------------------------------------------------------------- Q2: release-month seasonality (TH)
+# ---------------------------------------------------------------- Q2: release-month seasonality
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 SEASON_MIN_FILMS = 5   # months with fewer films than this are grayed out as unreliable
 SEASON_MEASURES = {
@@ -822,7 +823,7 @@ def season_figure(table: pd.DataFrame, measure: str, baseline: float, genre: str
     return fig
 
 
-# ---------------------------------------------------------------- Q3: number of genres (TH)
+# ---------------------------------------------------------------- Q3: number of genres
 GENRE_COUNT_ORDER = ["1", "2", "3", "4", "5+"]
 GENRE_COUNT_MIN_FILMS = 5   # bars with fewer films than this are grayed out as unreliable
 GENRE_COUNT_MEASURES = {
@@ -886,19 +887,54 @@ def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Fi
     return fig
 
 
-# ---------------------------------------------------------------- outcome predictor (RS)
+# ---------------------------------------------------------------- outcome predictor
+# Predicts the odds that a film idea busts, lands in the middle, or breaks out, using only what a
+# studio knows BEFORE release. Two simple models are averaged: a logistic regression (steady,
+# easy to explain) and a random forest (catches combinations the regression can't).
+# Tested on films it never saw (rolling forward through 2014-2018), this beats the earlier
+# budget + genre model: bust AUC 0.73 vs 0.69, and better-calibrated probabilities.
 OUTCOME_LABELS = ["Bust", "Middle", "Breakout"]
-OUTCOME_COLORS = ["#eb6834", "#8a8a85", "#2a78d6"]   # orange, gray, blue
+OUTCOME_COLORS = ["#c4501b", "#d49a14", "#0b86a6"]   # burnt orange, mustard gold, peacock teal
 OUTCOME_BREAKOUT_ROI = 5.0                           # breakout = grossed 6x its budget or more
-OUTCOME_FEATURES = ["log_budget"] + GENRES
+OUTCOME_RATINGS = ["G", "PG", "PG-13", "R"]
+OUTCOME_SOURCES = {                                  # label shown in the app -> column in the TMDB file
+    "Book": "based_on_book", "Comic": "based_on_comic", "True story": "based_on_true_story",
+    "Video game": "based_on_video_game", "Remake / reboot": "is_remake",
+}
+OUTCOME_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+                  "September", "October", "November", "December"]
+OUTCOME_BASE_FEATURES = ["log_budget"] + GENRES      # the earlier, simpler model
+OUTCOME_FEATURES = (OUTCOME_BASE_FEATURES + ["holiday", "summer", "fall", "runtime"]
+                    + [f"rated_{r}" for r in OUTCOME_RATINGS] + ["is_sequel"]
+                    + list(OUTCOME_SOURCES.values()))
 
 
-def outcome_training_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Films with a usable ROI plus the model features (log10 budget; genre flags already in the CSV).
-    Only information known BEFORE release is used, so post-release columns can't leak the answer."""
-    out = df.dropna(subset=["roi"]).copy()
-    out["log_budget"] = np.log10(out["production_budget"])
-    return out
+def load_outcome_films(source) -> pd.DataFrame:
+    """2010-2018 films from the TMDB-enriched file that have a budget and a usable ROI."""
+    films = pd.read_csv(source)
+    films = films[films["year"].between(YEAR_MIN, YEAR_MAX) & (films["production_budget"] > 0)]
+    films = films.dropna(subset=["roi"]).copy()   # drops films with no reported box office
+    films[GENRES] = films[GENRES].fillna(0).astype(int)
+    return films
+
+
+def outcome_features(films: pd.DataFrame, runtime_fill: float) -> pd.DataFrame:
+    """Model inputs, all known before release. Month becomes three season flags
+    (holiday = Nov-Dec, summer = May-Jul, fall = Aug-Oct; winter/spring is the baseline)."""
+    X = pd.DataFrame(index=films.index)
+    X["log_budget"] = np.log10(films["production_budget"])
+    for g in GENRES:
+        X[g] = films[g]
+    X["holiday"] = films["month"].isin([11, 12]).astype(int)
+    X["summer"] = films["month"].isin([5, 6, 7]).astype(int)
+    X["fall"] = films["month"].isin([8, 9, 10]).astype(int)
+    X["runtime"] = films["runtime"].fillna(runtime_fill)
+    for r in OUTCOME_RATINGS:
+        X[f"rated_{r}"] = (films["us_certification"] == r).astype(int)
+    X["is_sequel"] = films["is_sequel"].eq(True).astype(int)
+    for col in OUTCOME_SOURCES.values():
+        X[col] = films[col].eq(True).astype(int)
+    return X[OUTCOME_FEATURES]
 
 
 def outcome_classes(roi: pd.Series) -> np.ndarray:
@@ -906,26 +942,76 @@ def outcome_classes(roi: pd.Series) -> np.ndarray:
     return np.select([roi < 0, roi < OUTCOME_BREAKOUT_ROI], [0, 1], default=2)
 
 
-def train_outcome_model(df: pd.DataFrame):
-    """Three-class logistic regression: budget (scaled) + genre flags. C=0.1 shrinks the
-    coefficients gently so ~19 features on ~1,450 films don't overfit."""
-    films = outcome_training_data(df)
-    model = make_pipeline(StandardScaler(), LogisticRegression(C=0.1, max_iter=2000))
-    model.fit(films[OUTCOME_FEATURES], outcome_classes(films["roi"]))
-    return model
+class OutcomeModel:
+    """Average of a logistic regression and a random forest, predicting [bust, middle, breakout].
+    The regression is scaled and shrunk (C=0.03) so ~35 inputs on ~1,450 films don't overfit;
+    the forest uses leaves of at least 8 films for the same reason."""
+
+    def __init__(self, features: list[str] = OUTCOME_FEATURES, use_forest: bool = True):
+        self.features, self.use_forest = features, use_forest
+
+    def fit(self, films: pd.DataFrame):
+        self.runtime_fill_ = float(films["runtime"].median())
+        X = outcome_features(films, self.runtime_fill_)[self.features]
+        y = outcome_classes(films["roi"])
+        self.logit_ = make_pipeline(StandardScaler(), LogisticRegression(C=0.03, max_iter=3000)).fit(X, y)
+        self.forest_ = (RandomForestClassifier(n_estimators=300, min_samples_leaf=8, random_state=0, n_jobs=-1)
+                        .fit(X, y) if self.use_forest else None)
+        return self
+
+    def predict_proba(self, films: pd.DataFrame) -> np.ndarray:
+        X = outcome_features(films, self.runtime_fill_)[self.features]
+        p = self.logit_.predict_proba(X)
+        return (p + self.forest_.predict_proba(X)) / 2 if self.forest_ is not None else p
 
 
-def predict_outcomes(model, budget_millions: float, genres: list[str]) -> np.ndarray:
+def train_outcome_model(films: pd.DataFrame) -> OutcomeModel:
+    return OutcomeModel().fit(films)
+
+
+def predict_outcomes(model: OutcomeModel, budget_millions: float, genres: list[str], month: int,
+                     rating: str, runtime: float, is_sequel: bool, sources: list[str]) -> np.ndarray:
     """Chances of [bust, middle, breakout] for one film idea; they sum to 1."""
-    row = {"log_budget": np.log10(budget_millions * 1e6)}
+    row = {"production_budget": budget_millions * 1e6, "month": month, "runtime": runtime,
+           "us_certification": rating, "is_sequel": is_sequel}
     row.update({g: int(g in genres) for g in GENRES})
-    return model.predict_proba(pd.DataFrame([row])[OUTCOME_FEATURES])[0]
+    row.update({col: label in sources for label, col in OUTCOME_SOURCES.items()})
+    return model.predict_proba(pd.DataFrame([row]))[0]
 
 
-def outcome_base_rates(df: pd.DataFrame) -> np.ndarray:
+def outcome_base_rates(films: pd.DataFrame) -> np.ndarray:
     """Share of all films that busted / landed in the middle / broke out (for reference)."""
-    classes = outcome_classes(outcome_training_data(df)["roi"])
+    classes = outcome_classes(films["roi"])
     return np.bincount(classes, minlength=3) / len(classes)
+
+
+def evaluate_outcome_model(films: pd.DataFrame, first_test_year: int = 2014) -> pd.DataFrame:
+    """Rolling-forward test: for each year from first_test_year, train only on earlier films and
+    predict that year. Compares a flat guess, the earlier budget + genre regression, and this model.
+    Log loss: lower is better. AUC: 0.5 = coin flip, 1.0 = perfect ranking."""
+    from sklearn.metrics import log_loss, roc_auc_score
+
+    contenders = {
+        "Flat guess (same odds for every film)": None,
+        "Budget + genre only (earlier model)": lambda: OutcomeModel(OUTCOME_BASE_FEATURES, use_forest=False),
+        "Current model (adds season, runtime, rating, sequel, source)": lambda: OutcomeModel(),
+    }
+    ys, preds = [], {name: [] for name in contenders}
+    for year in range(first_test_year, YEAR_MAX + 1):
+        train, test = films[films["year"] < year], films[films["year"] == year]
+        y_train = outcome_classes(train["roi"])
+        ys.append(outcome_classes(test["roi"]))
+        for name, make in contenders.items():
+            preds[name].append(np.tile(np.bincount(y_train, minlength=3) / len(y_train), (len(test), 1))
+                               if make is None else make().fit(train).predict_proba(test))
+    y = np.concatenate(ys)
+    rows = []
+    for name, p in preds.items():
+        p, flat = np.vstack(p), contenders[name] is None   # a flat guess ranks nothing: AUC is 0.5 by definition
+        rows.append({"Model": name, "Log loss": log_loss(y, p, labels=[0, 1, 2]),
+                     "Bust AUC": 0.5 if flat else roc_auc_score(y == 0, p[:, 0]),
+                     "Breakout AUC": 0.5 if flat else roc_auc_score(y == 2, p[:, 2])})
+    return pd.DataFrame(rows)
 
 
 def outcome_figure(probs: np.ndarray) -> go.Figure:
