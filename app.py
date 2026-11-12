@@ -1,6 +1,7 @@
 from pathlib import Path
  
 import numpy as np
+import pandas as pd
 import streamlit as st
  
 from apputil import *
@@ -38,6 +39,9 @@ if _bg_path.exists():
 cached_load = st.cache_data(load_data)
 cached_outcome_films = st.cache_data(load_outcome_films)
 cached_outcome_model = st.cache_resource(train_outcome_model)   # trained once, reused on every rerun
+cached_planner_types = st.cache_data(planner_types)
+cached_planner_draws = st.cache_data(planner_draws)
+cached_recommend_slates = st.cache_data(recommend_slates)
  
 # ---------------------------------------------------------------- data source
 default_path = Path(__file__).parent / "movie_roi.csv"
@@ -104,8 +108,8 @@ risk_problem = ("No genres meet the minimum-films threshold for this year range.
 # ---------------------------------------------------------------- tabs
 # Fewer tabs, so there is less clicking: related views share a tab and read top to bottom.
 # The old per-view names are kept as aliases, so each section below still says which tab it lives in.
-tab_predictor, tab_budgets, tab_risk_reward, tab_timing = st.tabs([
-    "🔮 Outcome predictor", "💰 Budgets", "⚖️ Risk & reward", "🚀 Breakouts & timing",
+tab_predictor, tab_planner, tab_budgets, tab_risk_reward, tab_timing = st.tabs([
+    "🔮 Outcome predictor", "🗓️ Budget planner", "💰 Budgets", "⚖️ Risk & reward", "🚀 Breakouts & timing",
 ])
 tab_curve = tab_budget_stats = tab_budgets
 tab_risk = tab_extremes = tab_risk_stats = tab_roi = tab_risk_reward
@@ -154,6 +158,142 @@ with tab_predictor:
             "and source material), so treat these as rough odds, not predictions."
         )
  
+# ===================== Studio budget planner (TH) =====================
+with tab_planner:
+    st.subheader("Studio budget planner")
+    st.markdown(
+        "Split a year's production budget across **types of films** and see the range of years that "
+        "slate could have. Pick a risk level for a recommended slate, then change the number of films "
+        "of each type in the table to try your own."
+    )
+    planner_file = Path(__file__).parent / "data" / "movie_roi_tmdb.csv"
+    if not planner_file.exists():
+        st.info("The planner needs **data/movie_roi_tmdb.csv** (the TMDB-enriched file) next to this script.")
+    else:
+        # Uses every 2010-2018 film with reported box office, so the sidebar filters don't change it.
+        film_types, type_multiples = cached_planner_types(cached_outcome_films(planner_file))
+        type_costs = film_types["Cost"].to_numpy(float)
+        type_draws = cached_planner_draws(type_multiples)
+
+        p1, p2, p3 = st.columns([1.2, 1, 1.2])
+        plan_budget = p1.slider("Annual production budget (millions of dollars)", 50, 2000, 500, 25,
+                                key="plan_budget") * 1e6
+        plan_risk = p2.radio("Risk level", list(PLANNER_RISK_LEVELS), index=1, key="plan_risk",
+                             help="Conservative: lowest chance of losing money. Balanced: best typical "
+                                  "year. Aggressive: best good year (the best 1 in 10).")
+        breakeven_label = p3.radio("Break even at", list(PLANNER_BREAKEVEN), key="plan_breakeven",
+                                   help="Production budget leaves out marketing (often as much again), and "
+                                        "theaters keep about half the box office. 2.5x is a common rule of "
+                                        "thumb for the gross a film needs to actually make money.")
+        plan_breakeven = PLANNER_BREAKEVEN[breakeven_label]
+        with st.expander("Slate limits"):
+            l1, l2 = st.columns(2)
+            plan_max_type = l1.slider("Most films of one type", 1, 5, 3, key="plan_max_type",
+                                      help="Stops the planner from making ten horror films: audiences "
+                                           "and release dates for one kind of film run out.")
+            plan_max_films = l2.slider("Most films in the year", 4, 25, 15, key="plan_max_films",
+                                       help="Large studios release roughly 10 to 25 films a year.")
+
+        recs = cached_recommend_slates(type_costs, type_draws, plan_budget, plan_max_type,
+                                       plan_max_films, plan_breakeven)
+        if recs is None:
+            st.warning(f"No film type costs {fmt_money(plan_budget)} or less.")
+        else:
+            def slate_text(slate):
+                return ", ".join(f"{n} {name.lower()}" for name, n in zip(film_types["Film type"], slate) if n)
+
+            rec_returns = {risk: slate_returns(s, type_costs, type_draws, plan_budget)[:, 0]
+                           for risk, s in recs.items()}
+            rec_stats = {risk: slate_summary(r, plan_breakeven) for risk, r in rec_returns.items()}
+
+            st.markdown(f"**Recommended slate ({plan_risk}):** {slate_text(recs[plan_risk])}. "
+                        f"Out of a few thousand possible slates, this one has "
+                        f"{PLANNER_RISK_LEVELS[plan_risk][1]}.")
+
+            # Editable slate: starts at the recommendation, and resets when any setting above changes.
+            editor = film_types.assign(**{"Cost": film_types["Cost"] / 1e6, "Bust": film_types["Bust"] * 100,
+                                          "Breakout": film_types["Breakout"] * 100, "Films planned": recs[plan_risk]})
+            editor = editor[["Film type", "Films planned", "What counts", "Cost", "Typical return",
+                             "Bust", "Breakout", "Films"]]
+            edited = st.data_editor(
+                editor, hide_index=True, width="stretch",
+                key=f"plan_editor_{plan_budget}_{plan_risk}_{plan_max_type}_{plan_max_films}_{plan_breakeven}",
+                disabled=[c for c in editor.columns if c != "Films planned"],
+                column_config={
+                    "Films planned": st.column_config.NumberColumn(
+                        min_value=0, max_value=PLANNER_MAX_PER_TYPE, step=1, format="%d",
+                        help="Change these to try your own slate."),
+                    "Cost": st.column_config.NumberColumn("Typical cost", format="$%.1fM",
+                                                          help="Median budget of real films of this type."),
+                    "Typical return": st.column_config.NumberColumn(format="%.1fx",
+                                                                    help="Median worldwide gross / budget."),
+                    "Bust": st.column_config.NumberColumn("Bust rate", format="%.0f%%",
+                                                          help="Share that grossed less than their budget."),
+                    "Breakout": st.column_config.NumberColumn("Breakout rate", format="%.0f%%",
+                                                              help="Share that grossed 6x their budget or more."),
+                    "Films": st.column_config.NumberColumn("Real films (2010-18)", format="%d"),
+                },
+            )
+            my_slate = edited["Films planned"].fillna(0).clip(0, PLANNER_MAX_PER_TYPE).astype(int).to_numpy()
+            customized = not np.array_equal(my_slate, recs[plan_risk])
+
+            if my_slate.sum() == 0:
+                st.warning("Add at least one film to the slate.")
+            else:
+                my_returns = slate_returns(my_slate, type_costs, type_draws, plan_budget)[:, 0]
+                mine, rec = slate_summary(my_returns, plan_breakeven), rec_stats[plan_risk]
+                spent = float(my_slate @ type_costs)
+                if spent > plan_budget:
+                    st.warning(f"This slate costs {fmt_money(spent)}, which is "   # \$ so $ isn't read as math
+                               f"{fmt_money(spent - plan_budget)} over budget.".replace("$", "\\$"))
+
+                def vs_rec(key, pct=False):   # change from the recommended slate, shown only once edited
+                    d = mine[key] - rec[key]
+                    if not customized or abs(d) < 1e-9:
+                        return None
+                    return f"{d * 100:+.1f} pts vs. recommended" if pct else f"{d:+.2f}x vs. recommended"
+
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Spent", fmt_money(spent), f"{int(my_slate.sum())} films", delta_color="off")
+                m2.metric("Typical year", f"{mine['typical_year']:.2f}x", vs_rec("typical_year"),
+                          help="Median simulated year: (gross + unspent money) / budget.")
+                m3.metric("Bad year", f"{mine['bad_year']:.2f}x", vs_rec("bad_year"),
+                          help="1 in 10 simulated years is worse than this.")
+                m4.metric("Good year", f"{mine['good_year']:.2f}x", vs_rec("good_year"),
+                          help="1 in 10 simulated years is better than this.")
+                m5.metric("Chance of losing money", f"{mine['lose_money']:.0%}", vs_rec("lose_money", pct=True),
+                          delta_color="inverse",
+                          help=f"Share of simulated years whose return is below {plan_breakeven:g}x.")
+
+                st.plotly_chart(slate_figure(my_returns, plan_breakeven,
+                                             rec_returns[plan_risk] if customized else None), width="stretch")
+
+            st.markdown("**The three risk levels side by side**")
+            st.dataframe(
+                pd.DataFrame([{"Risk level": risk, "Slate": slate_text(s), "Films": int(s.sum()),
+                               "Spent": float(s @ type_costs) / 1e6,
+                               "Typical year": rec_stats[risk]["typical_year"],
+                               "Bad year": rec_stats[risk]["bad_year"],
+                               "Good year": rec_stats[risk]["good_year"],
+                               "Chance of losing money": rec_stats[risk]["lose_money"] * 100}
+                              for risk, s in recs.items()]),
+                hide_index=True, width="stretch",
+                column_config={
+                    "Spent": st.column_config.NumberColumn(format="$%.0fM"),
+                    **{c: st.column_config.NumberColumn(format="%.2fx")
+                       for c in ["Typical year", "Bad year", "Good year"]},
+                    "Chance of losing money": st.column_config.NumberColumn(format="%.0f%%"),
+                },
+            )
+            st.caption(
+                f"How it works: each film type's outcomes come from the real {YEAR_MIN}–{YEAR_MAX} films that "
+                f"fit it (a film can fit more than one type). The app simulates the year {PLANNER_SIMS:,} "
+                "times, each time drawing every planned film's gross / budget from those real films. "
+                "Limits: films are treated as independent, so a big slate looks safer than it would in a bad "
+                "year for the whole industry, and production budgets leave out marketing (try the 2.5x "
+                "break-even to allow for it)."
+            )
+
 # ======================= Budget distribution =======================
 with tab_curve:
     st.subheader("Budget distribution by genre")
