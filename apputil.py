@@ -1028,3 +1028,149 @@ def outcome_figure(probs: np.ndarray) -> go.Figure:
     )
     fig.update_yaxes(gridcolor="rgba(128,128,128,0.25)")
     return fig
+
+
+# ---------------------------------------------------------------- Q2: studio budget planner (TH)
+# A studio splits its annual budget across film TYPES (strategies such as "low-budget horror"),
+# not individual films. Each type's range of outcomes comes from the real 2010-2018 films that fit
+# it: a simulated year draws each planned film's gross / budget from those films at random.
+# Running the year thousands of times shows the slate's typical year, bad year and good year.
+# Films are treated as independent, so a slate looks safer than it would in a bad industry year.
+PLANNER_TYPES = {   # name -> (what it means, which films count). Budgets in millions.
+    "Low-budget horror": ("Horror, up to $15M", lambda f, b: (f["Horror"] == 1) & (b <= 15)),
+    "Indie drama": ("Drama (not horror), up to $15M",
+                    lambda f, b: (f["Drama"] == 1) & (f["Horror"] == 0) & (b <= 15)),
+    "Low-budget comedy": ("Live-action comedy, up to $25M",
+                          lambda f, b: (f["Comedy"] == 1) & (f["Animation"] == 0) & (b <= 25)),
+    "Mid-budget drama": ("Drama, $15-60M", lambda f, b: (f["Drama"] == 1) & b.between(15, 60)),
+    "Mid-budget thriller": ("Thriller or crime (not horror), $15-60M",
+                            lambda f, b: (f["Thriller"].eq(1) | f["Crime"].eq(1)) & (f["Horror"] == 0)
+                            & b.between(15, 60)),
+    "Mid-budget comedy": ("Live-action comedy, $25-80M",
+                          lambda f, b: (f["Comedy"] == 1) & (f["Animation"] == 0) & b.between(25, 80)),
+    "Mid-budget action": ("Action, $30-100M", lambda f, b: (f["Action"] == 1) & b.between(30, 100)),
+    "Animated family film": ("Animation, $50M or more", lambda f, b: (f["Animation"] == 1) & (b >= 50)),
+    "Original blockbuster": ("Not a sequel or franchise film, $100M or more",
+                             lambda f, b: ~f["franchise_film"] & (b >= 100)),
+    "Franchise blockbuster": ("Sequel or franchise film, $100M or more",
+                              lambda f, b: f["franchise_film"] & (b >= 100)),
+}
+PLANNER_RISK_LEVELS = {   # risk level -> (what it optimizes, plain-English goal)
+    "Conservative": ("safe", "the **lowest chance of losing money**"),
+    "Balanced": ("typical_year", "the best **typical year** (the median year)"),
+    "Aggressive": ("good_year", "the best **good year** (the best 1 in 10 years)"),
+}
+PLANNER_MAX_PER_TYPE = 10   # most films of one type the app can simulate
+PLANNER_BREAKEVEN = {   # label -> gross needed per $1 of production budget to break even
+    "1x budget (our bust line)": 1.0,
+    "2.5x budget (adds marketing and the theaters' cut)": 2.5,
+}
+PLANNER_SIMS = 4000
+
+
+def planner_types(films: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+    """One row per film type: its typical cost and how its real films did, plus each type's
+    gross / budget multiples (the outcomes a simulated year draws from).
+    A film can fit more than one type, just as it counts toward several genres."""
+    f = films.copy()
+    f["franchise_film"] = f["is_sequel"].eq(True) | f["franchise"].notna()
+    millions = f["production_budget"] / 1e6
+    multiple = f["worldwide_gross"] / f["production_budget"]
+    rows, multiples = [], {}
+    for name, (meaning, rule) in PLANNER_TYPES.items():
+        fit = rule(f, millions)
+        m = multiple[fit].to_numpy(float)
+        multiples[name] = m
+        rows.append({"Film type": name, "What counts": meaning, "Films": int(fit.sum()),
+                     "Cost": float(f.loc[fit, "production_budget"].median()),
+                     "Typical return": float(np.median(m)), "Bust": float((m < 1).mean()),
+                     "Breakout": float((m >= OUTCOME_BREAKOUT_ROI + 1).mean())})
+    return pd.DataFrame(rows), multiples
+
+
+def planner_draws(multiples: dict[str, np.ndarray], max_per_type: int = PLANNER_MAX_PER_TYPE,
+                  sims: int = PLANNER_SIMS, seed: int = 0) -> np.ndarray:
+    """Simulated outcomes, shape (types, sims, max_per_type + 1): entry [t, s, k] is the total
+    gross / budget of k films of type t in simulated year s (k = 0 gives 0). Every slate is scored
+    on the same simulated years, so differences between slates aren't luck of the draw."""
+    rng = np.random.default_rng(seed)
+    out = np.zeros((len(multiples), sims, max_per_type + 1))
+    for t, m in enumerate(multiples.values()):
+        out[t, :, 1:] = rng.choice(m, size=(sims, max_per_type)).cumsum(axis=1)
+    return out
+
+
+def slate_returns(slates: np.ndarray, costs: np.ndarray, draws: np.ndarray, budget: float) -> np.ndarray:
+    """Return on the annual budget for each slate in each simulated year, shape (sims, slates):
+    (box office gross + any unspent money) / budget. Unspent money is simply kept, so leaving part
+    of the budget unused isn't rewarded. A slate over budget is measured against what it spent.
+    slates is (slates, types): how many films of each type."""
+    slates = np.atleast_2d(slates)
+    gross = sum(costs[t] * draws[t][:, slates[:, t]] for t in range(len(costs)))
+    spent = slates @ costs
+    return (gross + np.maximum(budget - spent, 0)) / np.maximum(budget, spent)
+
+
+def slate_summary(returns: np.ndarray, breakeven: float = 1.0) -> dict:
+    """Typical, bad and good year for one slate's simulated returns, and the chance of losing money."""
+    return {"typical_year": float(np.median(returns)), "bad_year": float(np.quantile(returns, 0.1)),
+            "good_year": float(np.quantile(returns, 0.9)), "lose_money": float((returns < breakeven).mean())}
+
+
+def candidate_slates(costs: np.ndarray, budget: float, max_per_type: int, max_films: int,
+                     n: int = 3000, seed: int = 1) -> np.ndarray:
+    """Random slates that use up the budget: add a random affordable film type until nothing else fits
+    (or the slate hits max_films). Returns the distinct slates, shape (slates, types)."""
+    rng = np.random.default_rng(seed)
+    slates = np.zeros((n, len(costs)), dtype=int)
+    for i in range(n):
+        left = budget
+        while slates[i].sum() < max_films:
+            fits = np.flatnonzero((costs <= left) & (slates[i] < max_per_type))
+            if fits.size == 0:
+                break
+            t = rng.choice(fits)
+            slates[i, t] += 1
+            left -= costs[t]
+    return np.unique(slates[slates.sum(axis=1) > 0], axis=0)
+
+
+def recommend_slates(costs: np.ndarray, draws: np.ndarray, budget: float, max_per_type: int,
+                     max_films: int, breakeven: float = 1.0) -> dict[str, np.ndarray] | None:
+    """The best candidate slate for each risk level (see PLANNER_RISK_LEVELS). Ties go to the slate
+    with the better typical year. None if no film type is affordable."""
+    slates = candidate_slates(costs, budget, max_per_type, max_films)
+    if len(slates) == 0:
+        return None
+    returns = slate_returns(slates, costs, draws, budget)
+    typical = np.median(returns, axis=0)
+    goals = {"safe": -(returns < breakeven).mean(axis=0), "typical_year": typical,
+             "good_year": np.quantile(returns, 0.9, axis=0)}
+    return {risk: slates[np.lexsort((typical, goals[key]))[-1]]
+            for risk, (key, _) in PLANNER_RISK_LEVELS.items()}
+
+
+def slate_figure(returns: np.ndarray, breakeven: float, compare: np.ndarray | None = None) -> go.Figure:
+    """Histogram of one slate's simulated years (gross / money spent), with the break-even line.
+    compare (optional) is drawn behind it as an outline, e.g. the recommended slate."""
+    cap = float(np.quantile(returns if compare is None else np.concatenate([returns, compare]), 0.99))
+    bins = dict(start=0, end=cap, size=cap / 60)
+    fig = go.Figure()
+    if compare is not None:
+        fig.add_histogram(x=np.clip(compare, 0, cap), xbins=bins, name="Recommended slate",
+                          marker=dict(color="rgba(0,0,0,0)", line=dict(color=REF_COLOR, width=1.5)),
+                          histnorm="percent", hovertemplate="%{y:.1f}% of years<extra>Recommended</extra>")
+    fig.add_histogram(x=np.clip(returns, 0, cap), xbins=bins, name="Your slate", histnorm="percent",
+                      marker_color=OUTCOME_COLORS[2], opacity=0.85,
+                      hovertemplate="Return %{x:.1f}x: %{y:.1f}% of years<extra></extra>")
+    fig.add_vline(x=breakeven, line=dict(color=OUTCOME_COLORS[0], dash="dash", width=2),
+                  annotation_text=f"Break even ({breakeven:g}x)", annotation_position="top right")
+    fig.update_layout(
+        barmode="overlay", height=380, margin=dict(t=30, b=10),
+        xaxis=dict(title="Return on the annual budget in a simulated year", ticksuffix="x"),
+        yaxis=dict(title="Share of simulated years", ticksuffix="%"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        showlegend=compare is not None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.25)")
+    return fig
