@@ -2,17 +2,17 @@
 Helper functions for the movie budget distribution app.
 Pure data / plotting logic — no Streamlit calls — so it can be imported and tested anywhere.
 """
-
-
+ 
+ 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-
+ 
 YEAR_MIN, YEAR_MAX = 2010, 2018  # years with a meaningful sample (~120-200 films each)
 GENRES = [
     "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary", "Drama",
@@ -25,10 +25,10 @@ PALETTE = [
     "#4C78A8", "#F58518", "#54A24B", "#E45756", "#72B7B2", "#B279A2",
     "#FF9DA6", "#9D755D", "#EECA3B", "#BAB0AC", "#1F77B4", "#D62728",
 ]
-
+ 
 REF_COLOR = "#888888"
-
-
+ 
+ 
 # ---------------------------------------------------------------- data
 def load_data(source) -> pd.DataFrame:
     """Read the CSV and keep 2010-2018 films with a positive budget."""
@@ -36,26 +36,26 @@ def load_data(source) -> pd.DataFrame:
     df = df[df["year"].between(YEAR_MIN, YEAR_MAX)].copy()
     df = df[df["production_budget"] > 0]
     return df
-
-
+ 
+ 
 def filter_data(df: pd.DataFrame, years: tuple[int, int], exclude_no_bo: bool) -> pd.DataFrame:
     """Apply the year range and optional no-box-office exclusion."""
     out = df[df["year"].between(*years)]
     if exclude_no_bo:
         out = out[~out["no_reported_box_office"]]
     return out
-
-
+ 
+ 
 def genre_budgets(df: pd.DataFrame, genres: list[str], min_films: int = 3) -> dict[str, np.ndarray]:
     """Map each genre to an array of its films' budgets (genres with too few films dropped)."""
     groups = {g: df.loc[df[g] == 1, "production_budget"].to_numpy(float) for g in genres}
     return {g: v for g, v in groups.items() if len(v) >= min_films}
-
-
+ 
+ 
 def genre_color(genre: str, genres: list[str]) -> str:
     return PALETTE[genres.index(genre) % len(PALETTE)]
-
-
+ 
+ 
 # ---------------------------------------------------------------- helpers
 def fmt_money(v: float) -> str:
     if v >= 1e9:
@@ -65,7 +65,7 @@ def fmt_money(v: float) -> str:
     if v >= 1e3:
         return f"${v/1e3:.0f}K"
     return f"${v:,.0f}"
-
+ 
 # ---------------------------------------------------------------- Q3: risk/reward
 def get_genre_risk_reward(df: pd.DataFrame, genres: list[str] = GENRES, min_films: int = 10) -> pd.DataFrame:
     """
@@ -86,13 +86,13 @@ def get_genre_risk_reward(df: pd.DataFrame, genres: list[str] = GENRES, min_film
                 "coefficient_of_variation": cv,
             })
     return pd.DataFrame(rows).sort_values("coefficient_of_variation").reset_index(drop=True)
-
-
+ 
+ 
 def risk_reward_figure(risk: pd.DataFrame) -> go.Figure:
     """
     Bubble chart: every genre by mean ROI (x) vs. coefficient of variation (y).
     Bubble size = film count, color = volatility. This is the Q3 answer made explorable.
-
+ 
     Only genres that stand out from the pack get a permanent text label --
     labeling all of them makes the dense low-volatility cluster unreadable.
     Every genre is still hoverable (hover_name) even without a visible label.
@@ -103,7 +103,7 @@ def risk_reward_figure(risk: pd.DataFrame) -> go.Figure:
     roi_z = (roi - roi.mean()) / roi.std(ddof=0)
     is_outlier = (cv_z.abs() > 0.75) | (roi_z.abs() > 1.25)
     risk = risk.assign(label=risk["genre"].where(is_outlier, ""))
-
+ 
     fig = px.scatter(
         risk, x="mean_roi", y="coefficient_of_variation", size="count",
         color="coefficient_of_variation", color_continuous_scale="RdYlGn_r",
@@ -124,8 +124,8 @@ def risk_reward_figure(risk: pd.DataFrame) -> go.Figure:
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=10),
                       coloraxis_colorbar_title="Volatility")
     return fig
-
-
+ 
+ 
 # ---------------------------------------------------------------- Q1/Q3: genre extremes
 def genre_extremes(df: pd.DataFrame, genre: str) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Films in `genre`, plus the biggest-budget film and the lowest-ROI film in it."""
@@ -133,8 +133,8 @@ def genre_extremes(df: pd.DataFrame, genre: str) -> tuple[pd.DataFrame, pd.Serie
     biggest = subset.loc[subset["production_budget"].idxmax()]
     worst = subset.loc[subset["roi"].idxmin()]
     return subset, biggest, worst
-
-
+ 
+ 
 def extremes_figure(subset: pd.DataFrame, biggest: pd.Series, worst: pd.Series, genre: str) -> go.Figure:
     """
     Scatter of production budget (log scale) vs. ROI for every film in `genre`,
@@ -149,7 +149,7 @@ def extremes_figure(subset: pd.DataFrame, biggest: pd.Series, worst: pd.Series, 
         labels={"production_budget": "Production Budget ($, log scale)", "roi": "ROI"},
     )
     fig.update_traces(marker=dict(color="#BAB0AC", size=8))
-
+ 
     fig.add_trace(go.Scatter(
         x=[biggest["production_budget"]], y=[biggest["roi"]], mode="markers+text",
         marker=dict(symbol="star", size=22, color="#4C78A8", line=dict(width=1, color="black")),
@@ -170,8 +170,8 @@ def extremes_figure(subset: pd.DataFrame, biggest: pd.Series, worst: pd.Series, 
                   annotation_text="break-even", annotation_position="bottom right")
     fig.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=10), showlegend=True)
     return fig
-
-
+ 
+ 
 # ---------------------------------------------------------------- stats tab
 def risk_reward_table(risk: pd.DataFrame) -> pd.DataFrame:
     """risk_reward table formatted for st.dataframe display (renamed, rounded columns)."""
@@ -180,12 +180,12 @@ def risk_reward_table(risk: pd.DataFrame) -> pd.DataFrame:
         "std_roi": "ROI Std Dev", "coefficient_of_variation": "Volatility (CV)",
     })
     return out
-
+ 
 def hex_to_rgba(color: str, alpha: float) -> str:
     r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
     return f"rgba({r},{g},{b},{alpha})"
-
-
+ 
+ 
 def gaussian_kde(samples: np.ndarray, grid: np.ndarray, bw_adjust: float = 1.0,
                  reflect_at: float | None = None) -> np.ndarray:
     """Gaussian KDE with Scott's rule bandwidth (numpy only).
@@ -200,8 +200,8 @@ def gaussian_kde(samples: np.ndarray, grid: np.ndarray, bw_adjust: float = 1.0,
         z_ref = (grid[:, None] - (2 * reflect_at - samples)[None, :]) / bw
         dens += np.exp(-0.5 * z_ref**2).sum(axis=1)
     return dens / (n * bw * np.sqrt(2 * np.pi))
-
-
+ 
+ 
 def _budget_grid(all_budgets: np.ndarray, log_scale: bool, points: int = 400):
     """Return (grid in transformed space, grid in dollars, transform fn, reflect boundary)."""
     if log_scale:
@@ -210,8 +210,8 @@ def _budget_grid(all_budgets: np.ndarray, log_scale: bool, points: int = 400):
         return grid_t, 10 ** grid_t, np.log10, None
     grid_t = np.linspace(0, all_budgets.max() * 1.05, points)
     return grid_t, grid_t, (lambda a: a), 0.0
-
-
+ 
+ 
 # ---------------------------------------------------------------- figures
 def distribution_figure(
     groups: dict[str, np.ndarray],
@@ -230,13 +230,13 @@ def distribution_figure(
     series = list(groups.items())
     if show_all:
         series = [("All films", all_budgets)] + series
-
+ 
     fig = go.Figure()
     for name, vals in series:
         is_ref = name == "All films"
         color = REF_COLOR if is_ref else genre_color(name, genre_list)
         weight = len(vals) if scaled else 1.0
-
+ 
         if style in ("Histogram", "Both"):
             counts, edges = np.histogram(transform(vals), bins=30, range=(grid_t[0], grid_t[-1]))
             width = edges[1] - edges[0]
@@ -250,7 +250,7 @@ def distribution_figure(
                 customdata=counts,
                 hovertemplate=f"<b>{name}</b><br>~%{{x:$,.3s}}<br>%{{customdata}} films<extra></extra>",
             ))
-
+ 
         if style in ("Density curve", "Both"):
             dens = gaussian_kde(transform(vals), grid_t, bw_adjust, reflect) * weight
             fig.add_trace(go.Scatter(
@@ -259,11 +259,11 @@ def distribution_figure(
                 fill=None if is_ref else "tozeroy", fillcolor=hex_to_rgba(color, 0.08),
                 hovertemplate=f"<b>{name}</b><br>Budget: %{{x:$,.3s}}<extra></extra>",
             ))
-
+ 
         if show_medians and not is_ref:
             fig.add_vline(x=float(np.median(vals)), line=dict(color=color, width=1.5, dash="dash"),
                           opacity=0.8)
-
+ 
     fig.update_layout(
         height=560, barmode="overlay", hovermode="closest",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
@@ -274,8 +274,8 @@ def distribution_figure(
     fig.update_xaxes(type="log" if log_scale else "linear", tickprefix="$", tickformat="~s")
     fig.update_yaxes(showticklabels=scaled)  # normalized density values aren't meaningful to read
     return fig
-
-
+ 
+ 
 def violin_figure(df: pd.DataFrame, groups: dict[str, np.ndarray], log_scale: bool = True) -> go.Figure:
     """Half-violins per genre, sorted by median, with hoverable film titles."""
     genre_list = list(groups)
@@ -295,12 +295,12 @@ def violin_figure(df: pd.DataFrame, groups: dict[str, np.ndarray], log_scale: bo
                       margin=dict(l=10, r=10, t=20, b=10), xaxis_title="Production budget")
     fig.update_xaxes(type="log" if log_scale else "linear", tickprefix="$", tickformat="~s")
     return fig
-
-
+ 
+ 
 # ---------------------------------------------------------------- stats
 MONEY_COLS = ["Median", "Mean", "25th pct", "75th pct", "Max"]
-
-
+ 
+ 
 def summary_stats(groups: dict[str, np.ndarray]) -> pd.DataFrame:
     """Per-genre budget summary, sorted by median (highest first)."""
     rows = [{
@@ -312,14 +312,14 @@ def summary_stats(groups: dict[str, np.ndarray]) -> pd.DataFrame:
         "% over $100M": (v > 100e6).mean() * 100,
     } for g, v in groups.items()]
     return pd.DataFrame(rows).sort_values("Median", ascending=False).reset_index(drop=True)
-
-
+ 
+ 
 def stats_for_display(stats: pd.DataFrame) -> pd.DataFrame:
     """Copy of summary_stats with dollar columns converted to millions (for display formatting)."""
     out = stats.copy()
     out[MONEY_COLS] = out[MONEY_COLS] / 1e6
     return out
-
+ 
 def mean_std_table(df, genres=GENRES):
     rows = []
     for g in genres:
@@ -330,13 +330,13 @@ def mean_std_table(df, genres=GENRES):
                      "Average budget": v.mean() / 1e6,
                      "Std deviation": v.std(ddof=1) / 1e6})
     return pd.DataFrame(rows).sort_values("Average budget", ascending=False).reset_index(drop=True)
-
-
+ 
+ 
 # ---------------------------------------------------------------- Q1: low-budget breakouts
 ALL_GENRES = "All genres"
 BUDGET_STEPS = [1e6, 2e6, 3e6, 5e6, 7e6, 9e6, 12e6, 15e6, 20e6, 30e6, 50e6, 100e6, 425e6]
-
-
+ 
+ 
 def breakout_tag(df: pd.DataFrame, max_budget: float, genre: str, multiple: float) -> pd.DataFrame:
     """Films with reported box office, plus three columns: `multiple` (gross / budget),
     `selected` (fits the budget cap + genre) and `breakout` (grossed >= multiple x budget)."""
@@ -347,8 +347,8 @@ def breakout_tag(df: pd.DataFrame, max_budget: float, genre: str, multiple: floa
         out["selected"] &= out[genre] == 1
     out["breakout"] = out["multiple"] >= multiple
     return out
-
-
+ 
+ 
 def breakout_summary(tagged: pd.DataFrame) -> dict:
     """Headline numbers for the selected films (expects the output of breakout_tag)."""
     sel, rest = tagged[tagged["selected"]], tagged[~tagged["selected"]]
@@ -360,8 +360,8 @@ def breakout_summary(tagged: pd.DataFrame) -> dict:
         "median_multiple": sel["multiple"].median() if len(sel) else np.nan,
         "lost_money": (sel["multiple"] < 1).mean() if len(sel) else np.nan,
     }
-
-
+ 
+ 
 def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_GENRES,
                     multiple: float = 6) -> go.Figure:
     """Budget vs. worldwide gross, with the chosen budget/genre slice highlighted."""
@@ -373,7 +373,7 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
         ("In your selection", plot[plot["selected"] & ~plot["breakout"]], blue, 7, 0.6),
         (f"Breakouts ({multiple}x+ budget)", plot[plot["selected"] & plot["breakout"]], orange, 9, 0.9),
     ]
-
+ 
     fig = go.Figure()
     for name, g, color, size, opacity in groups:
         fig.add_trace(go.Scatter(
@@ -385,7 +385,7 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
                            "Budget %{x:$,.0f}<br>Gross %{y:$,.0f}<br>"
                            "<b>%{customdata[3]:.1f}x</b> budget<extra></extra>"),
         ))
-
+ 
     # Reference lines: break-even, the breakout line, and the budget cap
     x = np.array([2e4, 5e8])
     lines = [(x, x, REF_COLOR, "dash"), (x, x * multiple, orange, "dash"),
@@ -398,7 +398,7 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
     for lx, ly, text, anchor in labels:
         fig.add_annotation(x=np.log10(lx), y=np.log10(ly), text=text, showarrow=False,
                            xanchor=anchor, font=dict(size=11, color=REF_COLOR))
-
+ 
     axis = dict(type="log", tickvals=[1e4, 1e5, 1e6, 1e7, 1e8, 1e9],
                 ticktext=["$10K", "$100K", "$1M", "$10M", "$100M", "$1B"])
     fig.update_layout(
@@ -408,7 +408,7 @@ def breakout_figure(df: pd.DataFrame, max_budget: float = 9e6, genre: str = ALL_
         height=560, margin=dict(l=10, r=10, t=40, b=10), hoverlabel=dict(align="left"),
     )
     return fig
-
+ 
 # ------------------------------------------------------------
 # ROI Relationship Analysis
 # ------------------------------------------------------------
@@ -420,48 +420,48 @@ ROI_VARIABLES = {
     "Worldwide Gross": "worldwide_gross",
     "Vote Average": "vote_average",
 }
-
-
+ 
+ 
 def prepare_roi_data(df):
     """
     Prepare one consistent dataset for ROI analysis.
     """
-
+ 
     variables = list(ROI_VARIABLES.values())
-
+ 
     data = df.copy()
-
+ 
     if "no_reported_box_office" in data.columns:
         data = data[
             data["no_reported_box_office"] == False
         ].copy()
-
+ 
     data = (
         data[variables + ["roi"]]
         .replace([np.inf, -np.inf], np.nan)
         .dropna()
         .copy()
     )
-
+ 
     return data
-
-
+ 
+ 
 def roi_relationship_data(df, variable):
     """
     Calculate correlation and quartile ROI statistics.
     """
-
+ 
     data = prepare_roi_data(df)
-
+ 
     correlation = data[variable].corr(data["roi"])
-
+ 
     data["Level"] = pd.qcut(
         data[variable],
         q=4,
         labels=["Low", "Medium", "High", "Very High"],
         duplicates="drop",
     )
-
+ 
     summary = (
         data.groupby("Level", observed=True)
         .agg(
@@ -473,48 +473,48 @@ def roi_relationship_data(df, variable):
         )
         .reset_index()
     )
-
+ 
     movie_count = len(data)
-
+ 
     return summary, correlation, movie_count
-
-
+ 
+ 
 def format_range_value(value, display_name):
     """
     Format the quartile range values.
     """
-
+ 
     money_variables = {
         "Production Budget",
         "Domestic Gross",
         "Foreign Gross",
         "Worldwide Gross",
     }
-
+ 
     if display_name in money_variables:
-
+ 
         if abs(value) >= 1_000_000_000:
             return f"${value / 1_000_000_000:.2f}B"
-
+ 
         elif abs(value) >= 1_000_000:
             return f"${value / 1_000_000:.2f}M"
-
+ 
         elif abs(value) >= 1_000:
             return f"${value / 1_000:.1f}K"
-
+ 
         else:
             return f"${value:,.0f}"
-
+ 
     return f"{value:.2f}"
-
-
+ 
+ 
 def create_range_table(summary, display_name):
     """
     Create the Low, Medium, High, Very High range table.
     """
-
+ 
     table = summary.copy()
-
+ 
     table["Range"] = table.apply(
         lambda row: (
             f"{format_range_value(row['min_value'], display_name)}"
@@ -523,10 +523,10 @@ def create_range_table(summary, display_name):
         ),
         axis=1,
     )
-
+ 
     table["median_roi"] = table["median_roi"].round(2)
     table["mean_roi"] = table["mean_roi"].round(2)
-
+ 
     table = table[
         [
             "Level",
@@ -536,7 +536,7 @@ def create_range_table(summary, display_name):
             "movies",
         ]
     ]
-
+ 
     table = table.rename(
         columns={
             "median_roi": "Median ROI",
@@ -544,44 +544,44 @@ def create_range_table(summary, display_name):
             "movies": "Movies",
         }
     )
-
+ 
     return table
-
-
+ 
+ 
 def correlation_description(correlation):
     """
     Describe correlation strength and direction.
     """
-
+ 
     abs_correlation = abs(correlation)
-
+ 
     if abs_correlation < 0.10:
         strength = "very weak"
-
+ 
     elif abs_correlation < 0.30:
         strength = "weak"
-
+ 
     elif abs_correlation < 0.50:
         strength = "moderate"
-
+ 
     elif abs_correlation < 0.70:
         strength = "strong"
-
+ 
     else:
         strength = "very strong"
-
+ 
     if correlation > 0:
         direction = "positive"
-
+ 
     elif correlation < 0:
         direction = "negative"
-
+ 
     else:
         direction = "neutral"
-
+ 
     return strength, direction
-
-
+ 
+ 
 def roi_key_insight(
     summary,
     correlation,
@@ -591,28 +591,28 @@ def roi_key_insight(
     """
     Generate a short automatic interpretation.
     """
-
+ 
     if roi_statistic == "Median ROI":
         value_column = "median_roi"
     else:
         value_column = "mean_roi"
-
+ 
     low_roi = summary.iloc[0][value_column]
     high_roi = summary.iloc[-1][value_column]
-
+ 
     if high_roi > low_roi:
         comparison = "higher"
-
+ 
     elif high_roi < low_roi:
         comparison = "lower"
-
+ 
     else:
         comparison = "approximately the same"
-
+ 
     strength, direction = correlation_description(
         correlation
     )
-
+ 
     insight = (
         f"The Very High {display_name.lower()} group has a "
         f"{comparison} {roi_statistic.lower()} than the Low group "
@@ -620,66 +620,66 @@ def roi_key_insight(
         f"The Pearson correlation is {correlation:.3f}, "
         f"indicating a {strength} {direction} linear relationship."
     )
-
+ 
     return insight
-
-
+ 
+ 
 def roi_comparison_metrics(summary, roi_statistic):
     """
     Find highest ROI group and calculate change from Low to Very High.
     """
-
+ 
     if roi_statistic == "Median ROI":
         value_column = "median_roi"
     else:
         value_column = "mean_roi"
-
+ 
     best_row = summary.loc[
         summary[value_column].idxmax()
     ]
-
+ 
     low_value = summary.iloc[0][value_column]
     very_high_value = summary.iloc[-1][value_column]
-
+ 
     roi_change = very_high_value - low_value
-
+ 
     return {
         "highest_group": str(best_row["Level"]),
         "highest_roi": float(best_row[value_column]),
         "roi_change": float(roi_change),
     }
-
-
+ 
+ 
 def strongest_roi_relationship(df):
     """
     Find the characteristic with the strongest absolute correlation with ROI.
     """
-
+ 
     data = prepare_roi_data(df)
-
+ 
     correlations = {
         display_name: data[column].corr(data["roi"])
         for display_name, column in ROI_VARIABLES.items()
     }
-
+ 
     valid_correlations = {
         name: value
         for name, value in correlations.items()
         if pd.notna(value)
     }
-
+ 
     strongest_name = max(
         valid_correlations,
         key=lambda name: abs(valid_correlations[name]),
     )
-
+ 
     strongest_correlation = valid_correlations[
         strongest_name
     ]
-
+ 
     return strongest_name, float(strongest_correlation)
-
-
+ 
+ 
 def roi_relationship_figure(
     df,
     variable,
@@ -689,21 +689,21 @@ def roi_relationship_figure(
     """
     Create the interactive ROI relationship graph.
     """
-
+ 
     summary, correlation, movie_count = (
         roi_relationship_data(
             df,
             variable,
         )
     )
-
+ 
     if roi_statistic == "Median ROI":
         value_column = "median_roi"
     else:
         value_column = "mean_roi"
-
+ 
     plot_summary = summary.copy()
-
+ 
     plot_summary["range_label"] = plot_summary.apply(
         lambda row: (
             f"{format_range_value(row['min_value'], display_name)}"
@@ -712,9 +712,9 @@ def roi_relationship_figure(
         ),
         axis=1,
     )
-
+ 
     fig = go.Figure()
-
+ 
     fig.add_trace(
         go.Scatter(
             x=plot_summary["Level"],
@@ -740,7 +740,7 @@ def roi_relationship_figure(
             ),
         )
     )
-
+ 
     fig.update_layout(
         title=(
             f"{display_name} vs ROI | "
@@ -752,9 +752,9 @@ def roi_relationship_figure(
         height=550,
         hovermode="closest",
     )
-
+ 
     return fig, correlation, summary, movie_count
-
+ 
 # ---------------------------------------------------------------- Q2: release-month seasonality
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 SEASON_MIN_FILMS = 5   # months with fewer films than this are grayed out as unreliable
@@ -762,8 +762,8 @@ SEASON_MEASURES = {
     "Typical return": "median_multiple",   # median worldwide gross / budget
     "Hit rate": "hit_rate",                # share of films that grossed more than their budget
 }
-
-
+ 
+ 
 def season_films(df: pd.DataFrame, genre: str) -> pd.DataFrame:
     """Films with reported box office in the chosen genre, plus `multiple` (gross / budget)."""
     out = df[~df["no_reported_box_office"]].copy()   # a $0 gross would count as a flop
@@ -771,8 +771,8 @@ def season_films(df: pd.DataFrame, genre: str) -> pd.DataFrame:
         out = out[out[genre] == 1]
     out["multiple"] = out["worldwide_gross"] / out["production_budget"]
     return out
-
-
+ 
+ 
 def season_table(films: pd.DataFrame) -> pd.DataFrame:
     """One row per release month: films released, typical return, hit rate, and the top film."""
     rows = []
@@ -788,8 +788,8 @@ def season_table(films: pd.DataFrame) -> pd.DataFrame:
     table = pd.DataFrame(rows)
     table["reliable"] = table["films"] >= SEASON_MIN_FILMS
     return table
-
-
+ 
+ 
 def season_figure(table: pd.DataFrame, measure: str, baseline: float, genre: str) -> go.Figure:
     """Bars per release month for the chosen measure, compared with the genre's year-round value."""
     col = SEASON_MEASURES[measure]
@@ -799,7 +799,7 @@ def season_figure(table: pd.DataFrame, measure: str, baseline: float, genre: str
               for v, ok in zip(table[col], table["reliable"])]
     values = [f"{v:.0%}" if is_rate else f"{v:.1f}x" for v in table[col].fillna(0)]
     notes = ["" if ok else "<br><i>Too few films to trust</i>" for ok in table["reliable"]]
-
+ 
     fig = go.Figure(go.Bar(
         x=table["month"], y=table[col], marker_color=colors, marker_line_width=0,
         customdata=np.column_stack([values, table["films"], table["top_film"], notes]),
@@ -821,8 +821,8 @@ def season_figure(table: pd.DataFrame, measure: str, baseline: float, genre: str
         hoverlabel=dict(align="left"),
     )
     return fig
-
-
+ 
+ 
 # ---------------------------------------------------------------- Q3: number of genres
 GENRE_COUNT_ORDER = ["1", "2", "3", "4", "5+"]
 GENRE_COUNT_MIN_FILMS = 5   # bars with fewer films than this are grayed out as unreliable
@@ -831,8 +831,8 @@ GENRE_COUNT_MEASURES = {
     "Median budget": "median_budget",
     "Median worldwide gross": "median_gross",
 }
-
-
+ 
+ 
 def genre_count_films(df: pd.DataFrame, primary: str) -> pd.DataFrame:
     """Films with reported box office, plus `primary_genre` (first-listed genre),
     `genre_count` ("1" to "5+") and `multiple` (gross / budget). Optionally one primary genre only."""
@@ -844,8 +844,8 @@ def genre_count_films(df: pd.DataFrame, primary: str) -> pd.DataFrame:
     if primary != ALL_GENRES:
         out = out[out["primary_genre"] == primary]
     return out
-
-
+ 
+ 
 def genre_count_table(films: pd.DataFrame) -> pd.DataFrame:
     """One row per genre count: films, median budget, median gross, typical return."""
     table = (films.groupby("genre_count")
@@ -855,8 +855,8 @@ def genre_count_table(films: pd.DataFrame) -> pd.DataFrame:
     table["films"] = table["films"].fillna(0).astype(int)
     table["reliable"] = table["films"] >= GENRE_COUNT_MIN_FILMS
     return table
-
-
+ 
+ 
 def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Figure:
     """Bars by number of genres for the chosen measure (gray = too few films to trust)."""
     col = GENRE_COUNT_MEASURES[measure]
@@ -866,7 +866,7 @@ def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Fi
     budgets = [fmt_money(v) if pd.notna(v) else "–" for v in table["median_budget"]]
     grosses = [fmt_money(v) if pd.notna(v) else "–" for v in table["median_gross"]]
     returns = [f"{v:.1f}x" if pd.notna(v) else "–" for v in table["median_multiple"]]
-
+ 
     fig = go.Figure(go.Bar(
         x=table["genre_count"], y=table[col], marker_color=colors, marker_line_width=0,
         customdata=np.column_stack([table["films"], budgets, grosses, returns, notes]),
@@ -885,8 +885,8 @@ def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Fi
         hoverlabel=dict(align="left"),
     )
     return fig
-
-
+ 
+ 
 # ---------------------------------------------------------------- outcome predictor
 # Predicts the odds that a film idea busts, lands in the middle, or breaks out, using only what a
 # studio knows BEFORE release. Two simple models are averaged: a logistic regression (steady,
@@ -896,6 +896,7 @@ def genre_count_figure(table: pd.DataFrame, measure: str, primary: str) -> go.Fi
 OUTCOME_LABELS = ["Bust", "Middle", "Breakout"]
 OUTCOME_COLORS = ["#c4501b", "#d49a14", "#0b86a6"]   # burnt orange, mustard gold, peacock teal
 OUTCOME_BREAKOUT_ROI = 5.0                           # breakout = grossed 6x its budget or more
+OUTCOME_ROI_CAP = 30.0                               # hits above ROI 30 count as 30 when averaging (one mega-hit would distort it)
 OUTCOME_RATINGS = ["G", "PG", "PG-13", "R"]
 OUTCOME_SOURCES = {                                  # label shown in the app -> column in the TMDB file
     "Book": "based_on_book", "Comic": "based_on_comic", "True story": "based_on_true_story",
@@ -907,8 +908,8 @@ OUTCOME_BASE_FEATURES = ["log_budget"] + GENRES      # the earlier, simpler mode
 OUTCOME_FEATURES = (OUTCOME_BASE_FEATURES + ["holiday", "summer", "fall", "runtime"]
                     + [f"rated_{r}" for r in OUTCOME_RATINGS] + ["is_sequel"]
                     + list(OUTCOME_SOURCES.values()))
-
-
+ 
+ 
 def load_outcome_films(source) -> pd.DataFrame:
     """2010-2018 films from the TMDB-enriched file that have a budget and a usable ROI."""
     films = pd.read_csv(source)
@@ -916,8 +917,8 @@ def load_outcome_films(source) -> pd.DataFrame:
     films = films.dropna(subset=["roi"]).copy()   # drops films with no reported box office
     films[GENRES] = films[GENRES].fillna(0).astype(int)
     return films
-
-
+ 
+ 
 def outcome_features(films: pd.DataFrame, runtime_fill: float) -> pd.DataFrame:
     """Model inputs, all known before release. Month becomes three season flags
     (holiday = Nov-Dec, summer = May-Jul, fall = Aug-Oct; winter/spring is the baseline)."""
@@ -935,21 +936,21 @@ def outcome_features(films: pd.DataFrame, runtime_fill: float) -> pd.DataFrame:
     for col in OUTCOME_SOURCES.values():
         X[col] = films[col].eq(True).astype(int)
     return X[OUTCOME_FEATURES]
-
-
+ 
+ 
 def outcome_classes(roi: pd.Series) -> np.ndarray:
     """0 = bust (ROI < 0), 1 = middle (0 <= ROI < 5), 2 = breakout (ROI >= 5)."""
     return np.select([roi < 0, roi < OUTCOME_BREAKOUT_ROI], [0, 1], default=2)
-
-
+ 
+ 
 class OutcomeModel:
     """Average of a logistic regression and a random forest, predicting [bust, middle, breakout].
     The regression is scaled and shrunk (C=0.03) so ~35 inputs on ~1,450 films don't overfit;
     the forest uses leaves of at least 8 films for the same reason."""
-
-    def __init__(self, features: list[str] = OUTCOME_FEATURES, use_forest: bool = True):
-        self.features, self.use_forest = features, use_forest
-
+ 
+    def __init__(self, features: list[str] = OUTCOME_FEATURES, use_forest: bool = True, with_roi: bool = True):
+        self.features, self.use_forest, self.with_roi = features, use_forest, with_roi
+ 
     def fit(self, films: pd.DataFrame):
         self.runtime_fill_ = float(films["runtime"].median())
         X = outcome_features(films, self.runtime_fill_)[self.features]
@@ -957,44 +958,83 @@ class OutcomeModel:
         self.logit_ = make_pipeline(StandardScaler(), LogisticRegression(C=0.03, max_iter=3000)).fit(X, y)
         self.forest_ = (RandomForestClassifier(n_estimators=300, min_samples_leaf=8, random_state=0, n_jobs=-1)
                         .fit(X, y) if self.use_forest else None)
+        if self.with_roi:
+            # Return model: predicts log(gross / budget) (ROI + 1) so a few giant hits can't dominate,
+            # then averages a shrunk linear model and a forest, like the outcome model above.
+            y_log = np.log(np.clip(films["roi"] + 1, 0.02, None))
+            self.roi_linear_ = make_pipeline(StandardScaler(), Ridge(alpha=300)).fit(X, y_log)
+            self.roi_forest_ = RandomForestRegressor(n_estimators=300, min_samples_leaf=8, random_state=0,
+                                                     n_jobs=-1).fit(X, y_log)
+            capped = films["roi"].clip(upper=OUTCOME_ROI_CAP)   # average ROI within each outcome, hits capped
+            self.class_roi_ = np.array([capped[y == k].mean() for k in range(3)])
         return self
-
+ 
     def predict_proba(self, films: pd.DataFrame) -> np.ndarray:
         X = outcome_features(films, self.runtime_fill_)[self.features]
         p = self.logit_.predict_proba(X)
         return (p + self.forest_.predict_proba(X)) / 2 if self.forest_ is not None else p
-
-
+ 
+    def predict_roi(self, films: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """(typical ROI, expected ROI) for each film.
+        Typical = the return a middle-of-the-road film like this earns (a median-style estimate).
+        Expected = the average return: each outcome's chance times that outcome's average ROI, so it
+        always agrees with the Bust / Middle / Breakout odds and is lifted by breakout chances."""
+        X = outcome_features(films, self.runtime_fill_)[self.features]
+        typical = np.exp((self.roi_linear_.predict(X) + self.roi_forest_.predict(X)) / 2) - 1
+        return typical, self.predict_proba(films) @ self.class_roi_
+ 
+ 
 def train_outcome_model(films: pd.DataFrame) -> OutcomeModel:
     return OutcomeModel().fit(films)
-
-
-def predict_outcomes(model: OutcomeModel, budget_millions: float, genres: list[str], month: int,
-                     rating: str, runtime: float, is_sequel: bool, sources: list[str]) -> np.ndarray:
-    """Chances of [bust, middle, breakout] for one film idea; they sum to 1."""
+ 
+ 
+def _film_idea(budget_millions: float, genres: list[str], month: int, rating: str, runtime: float,
+               is_sequel: bool, sources: list[str]) -> pd.DataFrame:
+    """One-row table for a film idea, in the same layout as the training films."""
     row = {"production_budget": budget_millions * 1e6, "month": month, "runtime": runtime,
            "us_certification": rating, "is_sequel": is_sequel}
     row.update({g: int(g in genres) for g in GENRES})
     row.update({col: label in sources for label, col in OUTCOME_SOURCES.items()})
-    return model.predict_proba(pd.DataFrame([row]))[0]
-
-
+    return pd.DataFrame([row])
+ 
+ 
+def predict_outcomes(model: OutcomeModel, budget_millions: float, genres: list[str], month: int,
+                     rating: str, runtime: float, is_sequel: bool, sources: list[str]) -> np.ndarray:
+    """Chances of [bust, middle, breakout] for one film idea; they sum to 1."""
+    idea = _film_idea(budget_millions, genres, month, rating, runtime, is_sequel, sources)
+    return model.predict_proba(idea)[0]
+ 
+ 
+def predict_returns(model: OutcomeModel, budget_millions: float, genres: list[str], month: int,
+                    rating: str, runtime: float, is_sequel: bool, sources: list[str]) -> tuple[float, float]:
+    """(typical ROI, expected ROI) for one film idea. ROI = profit / budget, so 1.0 means the
+    film earns back its budget again as profit (it grossed twice its budget)."""
+    idea = _film_idea(budget_millions, genres, month, rating, runtime, is_sequel, sources)
+    typical, expected = model.predict_roi(idea)
+    return float(typical[0]), float(expected[0])
+ 
+ 
+def fmt_profit_millions(v: float) -> str:
+    """Profit in millions with a sign, e.g. +$47M or -$12M."""
+    return f"{'+' if v >= 0 else '-'}${abs(v):,.0f}M"
+ 
+ 
 def outcome_base_rates(films: pd.DataFrame) -> np.ndarray:
     """Share of all films that busted / landed in the middle / broke out (for reference)."""
     classes = outcome_classes(films["roi"])
     return np.bincount(classes, minlength=3) / len(classes)
-
-
+ 
+ 
 def evaluate_outcome_model(films: pd.DataFrame, first_test_year: int = 2014) -> pd.DataFrame:
     """Rolling-forward test: for each year from first_test_year, train only on earlier films and
     predict that year. Compares a flat guess, the earlier budget + genre regression, and this model.
     Log loss: lower is better. AUC: 0.5 = coin flip, 1.0 = perfect ranking."""
     from sklearn.metrics import log_loss, roc_auc_score
-
+ 
     contenders = {
         "Flat guess (same odds for every film)": None,
-        "Budget + genre only (earlier model)": lambda: OutcomeModel(OUTCOME_BASE_FEATURES, use_forest=False),
-        "Current model (adds season, runtime, rating, sequel, source)": lambda: OutcomeModel(),
+        "Budget + genre only (earlier model)": lambda: OutcomeModel(OUTCOME_BASE_FEATURES, use_forest=False, with_roi=False),
+        "Current model (adds season, runtime, rating, sequel, source)": lambda: OutcomeModel(with_roi=False),
     }
     ys, preds = [], {name: [] for name in contenders}
     for year in range(first_test_year, YEAR_MAX + 1):
@@ -1012,8 +1052,32 @@ def evaluate_outcome_model(films: pd.DataFrame, first_test_year: int = 2014) -> 
                      "Bust AUC": 0.5 if flat else roc_auc_score(y == 0, p[:, 0]),
                      "Breakout AUC": 0.5 if flat else roc_auc_score(y == 2, p[:, 2])})
     return pd.DataFrame(rows)
-
-
+ 
+ 
+def evaluate_roi_model(films: pd.DataFrame, first_test_year: int = 2014) -> pd.DataFrame:
+    """Rolling-forward test of the ROI predictions (same setup as evaluate_outcome_model).
+    MAE = average miss in ROI units (lower is better; ROI 1.0 = profit equal to budget).
+    Rank correlation = how well predicted ROI orders films by real ROI (0 = no better than random, 1 = perfect).
+    A few giant hits make real average ROI noisy, so the typical ROI is the steadier number."""
+    from scipy.stats import spearmanr
+ 
+    actual, flat, typical, expected = [], [], [], []
+    for year in range(first_test_year, YEAR_MAX + 1):
+        train, test = films[films["year"] < year], films[films["year"] == year]
+        model = OutcomeModel().fit(train)
+        t, e = model.predict_roi(test)
+        actual.append(test["roi"].to_numpy()); flat.append(np.full(len(test), train["roi"].median()))
+        typical.append(t); expected.append(e)
+    y = np.concatenate(actual)
+    rows = []
+    for name, p in [("Flat guess (median ROI of earlier films)", flat), ("Typical ROI (model)", typical),
+                    ("Expected ROI (model)", expected)]:
+        p = np.concatenate(p)
+        rows.append({"Prediction": name, "MAE": np.abs(y - p).mean(),
+                     "Rank correlation": 0.0 if name.startswith("Flat") else spearmanr(p, y)[0]})
+    return pd.DataFrame(rows)
+ 
+ 
 def outcome_figure(probs: np.ndarray) -> go.Figure:
     """Bar chart of the three outcome chances, fixed order, one color per outcome."""
     fig = go.Figure(go.Bar(
@@ -1028,3 +1092,4 @@ def outcome_figure(probs: np.ndarray) -> go.Figure:
     )
     fig.update_yaxes(gridcolor="rgba(128,128,128,0.25)")
     return fig
+ 

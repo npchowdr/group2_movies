@@ -5,15 +5,15 @@ import streamlit as st
  
 from apputil import *
 st.set_page_config(page_title="Movie Budgets & ROI by Genre", page_icon="🎬", layout="wide")
-
-
+ 
+ 
 # ---------------------------------------------------------------- background image
 @st.cache_data
 def _background_b64(path):
     import base64
     return base64.b64encode(Path(path).read_bytes()).decode()
-
-
+ 
+ 
 _bg_path = Path(__file__).parent / "black_background_image.jpg"
 # How much to dim the background image: 0 = full-strength image, 1 = solid black.
 BG_DIM = 0.8
@@ -34,7 +34,7 @@ if _bg_path.exists():
         unsafe_allow_html=True,
     )
  
-
+ 
 cached_load = st.cache_data(load_data)
 cached_outcome_films = st.cache_data(load_outcome_films)
 cached_outcome_model = st.cache_resource(train_outcome_model)   # trained once, reused on every rerun
@@ -138,12 +138,27 @@ with tab_predictor:
             pred_sources = st.multiselect("Based on", list(OUTCOME_SOURCES), key="pred_sources",
                                           help="Leave empty for an original story.")
  
-        pred_probs = predict_outcomes(
-            outcome_model, pred_budget, pred_genres, OUTCOME_MONTHS.index(pred_month) + 1,
-            pred_rating, pred_runtime, pred_sequel, pred_sources)
+        pred_idea = (pred_budget, pred_genres, OUTCOME_MONTHS.index(pred_month) + 1,
+                     pred_rating, pred_runtime, pred_sequel, pred_sources)
+        pred_probs = predict_outcomes(outcome_model, *pred_idea)
+        pred_typical, pred_expected = predict_returns(outcome_model, *pred_idea)
         with results:
             for col, label, prob in zip(st.columns(3), OUTCOME_LABELS, pred_probs):
                 col.metric(label, f"{prob:.0%}")
+            typical_col, expected_col = st.columns(2)
+            typical_col.metric(
+                "Typical ROI", f"{pred_typical:+.0%}",
+                help="ROI = profit ÷ budget, so +100% means the film earned its budget back again as profit "
+                     "(it grossed 2x its budget). This is the middle-of-the-road result for a film like this.")
+            expected_col.metric(
+                "Expected ROI", f"{pred_expected:+.0%}",
+                help="The average return: each outcome's chance times that outcome's average ROI. It is higher "
+                     "than the typical ROI because rare breakouts pull the average up (a single mega-hit is "
+                     "capped at +3,000% so it can't distort the average).")
+            st.caption((
+                f"On a ${pred_budget}M budget, that is about {fmt_profit_millions(pred_typical * pred_budget)} profit "
+                f"for a typical film and {fmt_profit_millions(pred_expected * pred_budget)} on average, "
+                "lifted by the chance of a breakout.").replace("$", "\\$"))   # escape $ so Streamlit doesn't read math
             st.plotly_chart(outcome_figure(pred_probs), width="stretch")
  
         base = outcome_base_rates(outcome_films)
@@ -151,7 +166,8 @@ with tab_predictor:
             f"For reference, across all films from {YEAR_MIN}–{YEAR_MAX}: {base[0]:.0%} busted, "
             f"{base[1]:.0%} landed in the middle, {base[2]:.0%} were breakouts. The model only uses what "
             "a studio knows before release (budget, genre, release month, rating, runtime, sequel status "
-            "and source material), so treat these as rough odds, not predictions."
+            "and source material), so treat these as rough odds, not predictions. The typical ROI is the steadier "
+            "number; the expected ROI swings with a few big hits."
         )
  
 # ======================= Budget distribution =======================
